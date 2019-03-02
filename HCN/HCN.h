@@ -1,4 +1,4 @@
-// Arthur Krewat - msalerno® - 2019/02/20
+	// Arthur Krewat - msalerno® - 2019/02/20
 //
 // HCN project - header and C++ source for Halo client-server communications.
 //
@@ -184,3 +184,4 @@ extern void hcn_init(char *version);
 extern void hcn_clear_player(int player_number);
 extern bool hcn_packet_valid(wchar_t *chat_string, unsigned int chat_type);
 extern bool hcn_running();
+extern bool hcn_process_chat(int player_number, int chat_type, wchar_t *packet);

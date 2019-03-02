@@ -124,7 +124,7 @@ char *hcn_key_value_parse(char *input) {
 // hsn_process_chat() - actually process an incoming packet. If return is true, packet has been modified,
 //		and needs to be sent back to the other side. 
 //   IMPORTANT! packet pointer MUST be able to take a reply packet of HCN_MAX_PACKET_LENGTH
-bool hsn_process_chat(int player_number, int chat_type, wchar_t *packet) {
+bool hcn_process_chat(int player_number, int chat_type, wchar_t *packet) {
 	int pi = (player_number == 0) ? 0 : player_number - 1;
 	struct HCN_preamble *preamble = (struct HCN_preamble *)packet;
 	struct HCN_preamble outbound_preamble;
