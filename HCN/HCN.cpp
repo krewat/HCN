@@ -2,7 +2,7 @@
 //
 // HCN project - header and C++ source for Halo client-server communications.
 //
-// (C)2019 - Kilowatt Computers(USA), RWG ® Server Hosting(EU) incorporating Realworld Guild
+// (C)2019 - Kilowatt Computers(USA)
 //
 // For all the gits out there.
 //
