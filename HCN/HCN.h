@@ -27,8 +27,29 @@
 // Every step of the way, consistency checking is a must. magic #, state in the initial handshake conversation,
 //	packet length, you name it. See HCN_packet_lengths array near the end of this include file.
 
+/*
+
+   Copyright 2019 Kilowatt Computers
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+	 http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+
+*/
+
+
 // Basic data structures and enums for packets.
 //	Care is taken to make sure enums start at 1 to keep the number of zeroes to a minimum.
+
+
 
 #define HCN_CHAT_TYPE	6						// This is an unused chat type that should just "pass through".
 												// Sehe's NetEvents used chat type 5.
