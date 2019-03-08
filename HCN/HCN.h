@@ -45,11 +45,8 @@
 
 */
 
-
 // Basic data structures and enums for packets.
 //	Care is taken to make sure enums start at 1 to keep the number of zeroes to a minimum.
-
-
 
 #define HCN_CHAT_TYPE	6						// This is an unused chat type that should just "pass through".
 												// Sehe's NetEvents used chat type 5.
@@ -92,11 +89,17 @@ enum HCN_CLIENT_TYPE {
 // Max players is always 16.
 #define HCN_MAX_PLAYERS			16
 
+// Some max sizes for key/value string lengths. Includes the null terminator.
+#define HCN_KEY_LENGTH		30
+#define HCN_VALUE_LENGTH	128
+#define HCN_KEYVALUE_LENGTH	HCN_KEY_LENGTH + HCN_VALUE_LENGTH + 1
+
 // Zero encoding requires we define a known tag of sorts. If this tag is encountered, there is ALWAYS a next
-//	byte that indicates what the desired byte should be.
-#define	HCN_ENCODE_TAG		0xFF				// Tag.
-#define HCN_ENCODE_ZERO		0x01				// If second byte is this, it decodes to a single 0x00
-#define HCN_ENCODE_ORIGINAL 0xFF				// A double FF means a single FF.
+//	byte that indicates what the desired byte should be. Remember, this is wchar_t based, so we only have to
+//	encode a full 16-bit zero. Anything else does not need to be.
+#define	HCN_ENCODE_TAG		0xFFFF				// Tag. Not a valid UNICODE (UTF-16) character.
+#define HCN_ENCODE_ZERO		0xFF01				// If second 16-bit character is this, it decodes to a single 0x0000
+#define HCN_ENCODE_ORIGINAL 0xFFFF				// If second 16-bit character is this, it decides to a 0xFFFF
 
 // Packet type. Some of these are bidirectional, some are one-sided. BI = bidirectional. Client comes from client, Server comes from server.
 enum HCN_packet_type {
@@ -118,8 +121,13 @@ struct HCN_keyvalue {
 	struct HCN_preamble;
 
 	char keyvalue_length;						// Length of the key value pair.
-	char keyvalue;								// an ASCII key-value pair, of the form "key=value". SJ=ON or SJ=OFF for example.
+	char *keyvalue[HCN_KEYVALUE_LENGTH];		// an ASCII key-value pair, of the form "key=value". SJ=ON or SJ=OFF for example.
 
+};
+
+// Packet definitions.
+struct HCN_packet {								// Generic packet. 
+	char data[HCN_MAX_PACKET_LENGTH];
 };
 
 struct HCN_preamble {
@@ -130,7 +138,7 @@ struct HCN_preamble {
 	HCN_preamble() { magic = HCN_MAGIC; };		// Always set the magic number on construction. 
 };
 
-// HCN_PACKET_HANDSHAKE - A handshake packet. Includes versioning.
+// HCN_PACKET_HANDSHAKE - A handshake packet. Includes versioning. 
 struct HCN_handshake {							// A handshake packet.
 	struct HCN_preamble preamble;				// Always need a preamble.
 
@@ -142,13 +150,11 @@ struct HCN_handshake {							// A handshake packet.
 												// - Client immediately goes to HCN_STATE_RUNNING after sending this.
 
 	unsigned char hcn_type;						// enum of HCN_SERVER_TYPE or HCN_CLIENT_TYPE (based on hcn_state).
-	char version;								// There's always a version string at the end.
+	char version[HCN_KEYVALUE_LENGTH];			// There's always a version string at the end.
 };
 
-// Some max sizes for key/value string lengths. Includes the null terminator.
-#define HCN_KEY_LENGTH		30
-#define HCN_VALUE_LENGTH	128
-#define HCN_KEYVALUE_LENGTH	HCN_KEY_LENGTH + HCN_VALUE_LENGTH + 1
+// A typedef for client or server supplied functions to send chat.
+typedef bool(*HCN_send_packet)(struct HCN_packet *packet, unsigned int length);
 
 // HCN_callback_keyvalue - used by the application to define a callback for a key/value pair.
 //								int player_number is supplied by the application and is simply passed through to the callback function unmodified.
@@ -163,12 +169,25 @@ struct HCN_key_dispatch {
 };
 
 
+// An external logger callback. Set by hcn_logger_callback(...) - so a caller can log HCN errors or debug output through it's own logger function
+typedef void(*HCN_logger_callback)(int level, const char *string);
+
+// Levels for HCN logger.
+#define HCN_LOG_FATAL	0													// Completely fatal.
+#define HCN_LOG_ERROR	1													// An error, but we can deal with it.
+#define HCN_LOG_WARN	2													// Warning.
+#define HCN_LOG_INFO	3													// General Info that we might not care about
+#define HCN_LOG_DEBUG	4													// Full-on debug mode.
+#define HCN_LOG_DEBUG2	5													// even more debugging for certain things like web events and such.
+
+
 // **********************************************
 // All externals are below. Data locations first:
 // **********************************************
 
 // The current HCN state.
 extern enum HCN_state hcn_state[HCN_MAX_PLAYERS];
+extern char hcn_our_version[HCN_VALUE_LENGTH];
 
 // What we are, client or server. And what type.
 extern enum HCN_OUR_SIDE hcn_our_side;
@@ -176,12 +195,13 @@ extern enum HCN_SERVER_TYPE hcn_server_type;
 extern enum HCN_CLIENT_TYPE hcn_client_type[HCN_MAX_PLAYERS];
 
 // Functions. Careful, some are overloaded...
-
+extern void hcn_client_start(HCN_send_packet packet_sender);
 extern void hcn_what_we_are(enum HCN_OUR_SIDE our_side, enum HCN_CLIENT_TYPE client_type);
 extern void hcn_what_we_are(enum HCN_OUR_SIDE our_side, enum HCN_SERVER_TYPE client_type);
 
 extern void hcn_init(char *version);
+extern void hcn_set_logger_callback(HCN_logger_callback callback);
 extern void hcn_clear_player(int player_number);
-extern bool hcn_packet_valid(wchar_t *chat_string, unsigned int chat_type);
-extern bool hcn_running();
-extern bool hcn_process_chat(int player_number, int chat_type, wchar_t *packet);
+extern bool hcn_valid_packet(struct HCN_packet *packet, unsigned int chat_type);
+extern bool hcn_running(int player_number);
+extern bool hcn_process_chat(int player_number, int chat_type, struct HCN_packet *packet);
