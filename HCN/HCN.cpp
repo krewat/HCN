@@ -81,7 +81,6 @@ void hcn_set_logger_callback(HCN_logger_callback callback) {
 }
 
 // Provide a local HCN logger using the callback.
-//void hcn_logger(int level, const char *string, ...) {
 void hcn_logger(int level, const char *string, ...) {
 	va_list ap;
 	int bufptr = 0;	
@@ -262,6 +261,8 @@ void hcn_client_start(HCN_send_packet packet_sender) {
 	length = hcn_encode(&enc_packet, packet, length);					// Encoded packet might have a longer length. AND, the length will now be wchar_t.
 	packet_sender(&enc_packet, length);									// Send the packet using the supplied packet sender.
 
+	hcn_other_side[0].hcn_state = HCN_STATE_HANDSHAKE_C2S;				// Record that the other side was sent a Client->Server handshake packet.
+
 }
 
 // hsn_process_chat() - actually process an incoming packet. If return is true, packet has been modified,
@@ -288,26 +289,42 @@ bool hcn_process_chat(int player_number, int chat_type, struct HCN_packet *packe
 
 		switch (hcn_our_side) {												// Server or client, we need to make decisions.
 		case HCN_SERVER:													// We are a server.
-			hcn_logger(HCN_LOG_DEBUG, "hcn_process_chat(): We are a SERVER");
+			hcn_logger(HCN_LOG_DEBUG, "hcn_process_chat(): We are a SERVER and got a packet from a client");
 			if (handshake->hcn_state == HCN_STATE_HANDSHAKE_C2S) {			// This is a client talking to us, who wants to go to state RUNNING
-				//hcn_logger(HCN_LOG_DEBUG, "hcn_process_chat(): Got a client calling in, player_number %d", player_number);
-				hcn_state[pi] = HCN_STATE_HANDSHAKE_S2C;					// Set the current state to server->client
+				hcn_logger(HCN_LOG_DEBUG, "hcn_process_chat(): Got a client calling in, player_number %d", player_number);
+				hcn_state[pi] = HCN_STATE_RUNNING;							// Set the current state to running.
 				hcn_other_side[pi] = *handshake;							// And keep a copy of the handshake packet.
 
 				// Setup our reply.
-				handshake->hcn_state = HCN_STATE_HANDSHAKE_S2C;
-				//hcn_logger(HCN_LOG_DEBUG, "hcn_process_chat(): Sending back a handshake with state %d", handshake->hcn_state);
+				handshake->hcn_state = HCN_STATE_HANDSHAKE_S2C;				// tell the client that our state is Server->Client
+				strcpy(handshake->version, hcn_our_version);
+				hcn_logger(HCN_LOG_DEBUG, "hcn_process_chat(): Sending back a handshake with state %d", handshake->hcn_state);
 				return true;												// and tell the caller we created a reply and they should send it.
 			}
 			else {
-				//hcn_logger(HCN_LOG_DEBUG, "hcn_process_chat(): got an unknown state %d", handshake->hcn_state);
+				hcn_logger(HCN_LOG_DEBUG, "hcn_process_chat(): SERVER got an unknown state %d - going idle", handshake->hcn_state);
 				hcn_state[pi] = HCN_STATE_NONE;								// MISSION ABORT! We got something unexpected from the client.
 			}
 			break;;
 		case HCN_CLIENT:
+			hcn_logger(HCN_LOG_DEBUG, "hcn_process_chat(): We are a CLIENT and got a packet from a server");
 
+			if (handshake->hcn_state == HCN_STATE_HANDSHAKE_S2C && hcn_other_side[0].hcn_state==HCN_STATE_HANDSHAKE_C2S) { // This is from a server, so check the "other side's" state.
+				hcn_logger(HCN_LOG_DEBUG, "hcn_process_chat(): Got a server calling in");
+				hcn_state[0] = HCN_STATE_RUNNING;							// we got back a handshake from the server, so we're running.
+				hcn_other_side[0] = *handshake;								// And keep a copy of the handshake packet.
+				hcn_other_side[0].hcn_state = HCN_STATE_RUNNING;			// Set our copy of the handshake for this server, to state=RUNNING.
 
+				hcn_logger(HCN_LOG_DEBUG, "hcn_process_chat(): Got handshake from server");
+
+				return false;												// No need to reply.
+			}
+			else {
+				hcn_logger(HCN_LOG_DEBUG, "hcn_process_chat(): CLIENT got an unknown state %d - going idle", handshake->hcn_state);
+				hcn_state[0] = HCN_STATE_NONE;								// MISSION ABORT! We got something unexpected from the server
+			}
 			break;;
+
 		}
 
 	}
