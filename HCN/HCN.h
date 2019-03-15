@@ -83,7 +83,7 @@ enum HCN_CLIENT_TYPE {
 // *** Remember all packets must be terminated by a wchar_t null, essentially 2 zero bytes, aligned on an even
 //		byte boundary.
 //
-#define HCN_MAGIC	0x1F20						// the actual order would be: 0x20, 0x1F because of little Endian
+#define HCN_MAGIC	0x1F20					// the actual order would be: 0x20, 0x1F because of little Endian
 
 // Max packet length.
 #define HCN_MAX_PACKET_LENGTH	500				// it's really 510 I think, but better to be safe than sorry.
@@ -101,30 +101,29 @@ enum HCN_CLIENT_TYPE {
 //	encode a full 16-bit zero. Anything else does not need to be.
 #define	HCN_ENCODE_TAG		0xFFFF				// Tag. Not a valid UNICODE (UTF-16) character.
 #define HCN_ENCODE_ZERO		0xFF01				// If second 16-bit character is this, it decodes to a single 0x0000
-#define HCN_ENCODE_ORIGINAL 0xFFFF				// If second 16-bit character is this, it decides to a 0xFFFF
+#define HCN_ENCODE_ORIGINAL 0xFFFF				// If second 16-bit character is this, it decodes to a 0xFFFF
 
 // Packet type. Some of these are bidirectional, some are one-sided. BI = bidirectional. Client comes from client, Server comes from server.
 enum HCN_packet_type {
-	HCN_PACKET_HANDSHAKE = 1,					// BI - Start a conversation with a client. Client sends this first. Server replies in kind.
-	HCN_PACKET_KEYVALUE							// Set a key to a value. SJ=ON, SJ=OFF, MTV=ON, etc.
+	HCN_PACKET_HANDSHAKE = 1,				// BI - Start a conversation with a client. Client sends this first. Server replies in kind.
+	HCN_PACKET_KEYVALUE					// Set a key to a value. SJ=ON, SJ=OFF, MTV=ON, etc.
 };
 
 // States for the state machine. At various stages of handshake, version exchange, and whatever follows that, we need to track state.
 enum HCN_state {
-	HCN_STATE_NONE = 1,							// we haven't done anything yet. This indicates a handshake needs to be performed.
-	HCN_STATE_HANDSHAKE_C2S,					// Client sent a handshake to the server, waiting for a handshake packet in response which includes server's version, etc.
-	HCN_STATE_HANDSHAKE_S2C,					// Server sent a handshake to the client, waiting for a success response 
-	HCN_STATE_RUNNING,							// General running state. We're good to send or receive events as needed.
-	HCN_STATE_FAILED = 0xff						// Something didn't match or pass inspection. If we're in this state, ignore everything from the other side. 
+	HCN_STATE_NONE = 1,					// we haven't done anything yet. This indicates a handshake needs to be performed.
+	HCN_STATE_HANDSHAKE_C2S,				// Client sent a handshake to the server, waiting for a handshake packet in response which includes server's version, etc.
+	HCN_STATE_HANDSHAKE_S2C,				// Server sent a handshake to the client, waiting for a success response 
+	HCN_STATE_RUNNING					// General running state. We're good to send or receive events as needed.
 };
 
 // The preamble to every packet.
 struct HCN_preamble {
-	unsigned short int magic;					// Always have a magic number.
-	unsigned char packet_type;					// Packet type.
+	unsigned short int magic;				// Always have a magic number.
+	unsigned char packet_type;				// Packet type.
 	unsigned char packet_length;				// Shouldn't need more than 256 bytes, zero encoding could make this much larger anyway.
 
-	HCN_preamble() { magic = HCN_MAGIC; };		// Always set the magic number on construction. 
+	HCN_preamble() { magic = HCN_MAGIC; };			// Always set the magic number on construction. 
 
 };
 
@@ -132,7 +131,7 @@ struct HCN_preamble {
 struct HCN_keyvalue_packet {
 	struct HCN_preamble preamble;
 
-	char keyvalue_length;						// Length of the key value pair.
+	char keyvalue_length;					// Length of the key value pair.
 	char keyvalue[HCN_KEYVALUE_LENGTH];			// an ASCII key-value pair, of the form "key=value". SJ=ON or SJ=OFF for example.
 
 	HCN_keyvalue_packet() { memset(keyvalue, 0, HCN_KEYVALUE_LENGTH); } // On construction, zero out the entire string.
@@ -140,22 +139,20 @@ struct HCN_keyvalue_packet {
 };
 
 // Packet definitions.
-struct HCN_packet {								// Generic packet. 
+struct HCN_packet {						// Generic packet. 
 	char data[HCN_MAX_PACKET_LENGTH];
 };
 
 // HCN_PACKET_HANDSHAKE - A handshake packet. Includes versioning. 
-struct HCN_handshake {							// A handshake packet.
+struct HCN_handshake {						// A handshake packet.
 	struct HCN_preamble preamble;				// Always need a preamble.
 
-	unsigned char hcn_state;					// This is the intended state of the connection. 
-												// - First packet from client, this is HCN_STATE_HANDSHAKE_C2S, because handshake direction is client-to-server.
-												// - Server replies with this set to HCN_STATE_HANDSHAKE_S2C, because handshake direction is server-to-client.
-												// - Client responds with HCN_STATE_RUNNING to indicate we're good to go, because the current state on both sides is now "running".
-												// - Server does not enter RUNNING state until it receives HCN_STATE_RUNNING from client. 
-												// - Client immediately goes to HCN_STATE_RUNNING after sending this.
+	unsigned char hcn_state;				// This is the intended state of the connection. 
+								// - First packet from client, this is HCN_STATE_HANDSHAKE_C2S, because handshake direction is client-to-server.
+								// - Server replies with this set to HCN_STATE_HANDSHAKE_S2C, because handshake direction is server-to-client.
+								// - Client immediately goes to HCN_STATE_RUNNING after receiving this.
 
-	unsigned char hcn_type;						// enum of HCN_SERVER_TYPE or HCN_CLIENT_TYPE (based on hcn_state).
+	unsigned char hcn_type;					// enum of HCN_SERVER_TYPE or HCN_CLIENT_TYPE (based on hcn_state).
 	char version[HCN_KEYVALUE_LENGTH];			// There's always a version string at the end.
 
 	HCN_handshake() { memset(version, 0, HCN_KEYVALUE_LENGTH); } // On construction, zero out the entire string.
@@ -188,12 +185,12 @@ typedef void(*HCN_packet_sender)(int player_number, struct HCN_packet *packet);
 
 
 // Levels for HCN logger.
-#define HCN_LOG_FATAL	0													// Completely fatal.
-#define HCN_LOG_ERROR	1													// An error, but we can deal with it.
-#define HCN_LOG_WARN	2													// Warning.
-#define HCN_LOG_INFO	3													// General Info that we might not care about
-#define HCN_LOG_DEBUG	4													// Full-on debug mode.
-#define HCN_LOG_DEBUG2	5													// even more debugging for certain things like web events and such.
+#define HCN_LOG_FATAL	0					// Completely fatal.
+#define HCN_LOG_ERROR	1					// An error, but we can deal with it.
+#define HCN_LOG_WARN	2					// Warning.
+#define HCN_LOG_INFO	3					// General Info that we might not care about
+#define HCN_LOG_DEBUG	4					// Full-on debug mode.
+#define HCN_LOG_DEBUG2	5					// even more debugging for certain things like web events and such.
 
 
 // **********************************************
