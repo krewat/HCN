@@ -346,6 +346,10 @@ extern void hcn_set_keyvalue_callback_list(HCN_key_dispatch *key_list);
 extern void hcn_what_we_are(HCN_OUR_SIDE our_side, HCN_CLIENT_TYPE client_type);
 extern void hcn_what_we_are(HCN_OUR_SIDE our_side, HCN_SERVER_TYPE client_type);
 
+extern struct HCN_enum_to_string HCN_state_names[];
+extern struct HCN_enum_to_string HCN_server_names[];
+extern struct HCN_enum_to_string HCN_client_names[];
+
 extern void hcn_init(char *version);
 extern void hcn_on_tick();
 extern void hcn_set_logger_callback(HCN_logger_callback callback);
@@ -355,6 +359,7 @@ extern int hcn_encode(struct HCN_packet *packet, struct HCN_packet *source, int 
 extern int hcn_decode(struct HCN_packet *packet, struct HCN_packet *source);
 extern void hcn_packet_sender(int player_number, HCN_packet *packet, int packet_length);
 extern bool hcn_running(int player_number);
+extern char *hcn_enum_to_string(int e_num, HCN_enum_to_string *enum_list);
 extern bool hcn_process_chat(int player_number, int chat_type, wchar_t *our_packet);
 extern bool hcn_datapoint_packet_handler(int player_number, HCN_packet *packet);
 extern bool hcn_vector_packet_handler(int player_number, HCN_packet *packet);

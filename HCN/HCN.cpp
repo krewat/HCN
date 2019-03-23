@@ -102,6 +102,14 @@ int hcn_vector_dispatch_list_entries = 0;
 // Callbacks to the application for various key/value pairs
 struct HCN_key_dispatch *hcn_key_dispatch_list = NULL;
 
+// State types.
+struct HCN_enum_to_string HCN_state_names[] = {
+	{ HCN_STATE_NONE, "NO STATE" },
+	{ HCN_STATE_HANDSHAKE_C2S, "CLIENT->SERVER HANDSHAKE" },
+	{ HCN_STATE_HANDSHAKE_S2C, "SERVER->CLIENT HANDSHAKE" },
+	{ HCN_STATE_RUNNING, "HCN RUNNING" }
+};
+
 // Server types as enum/string pairs.
 struct HCN_enum_to_string HCN_server_names[] = {
 	{ HCN_NOT_A_SERVER, "none"},
@@ -436,16 +444,25 @@ bool hcn_process_chat(int player_number, int chat_type, wchar_t *our_packet) {
 	int pi = (player_number == 0) ? 0 : player_number - 1;
 	char key[HCN_KEYVALUE_LENGTH];
 	char *value;
-	int length;
+	int length, encoded_length;
 	struct HCN_packet packet;
 	struct HCN_packet reply_packet;
+	struct HCN_preamble *encoded_preamble = (struct HCN_preamble *)our_packet;
 	struct HCN_preamble *preamble = (struct HCN_preamble *)&packet;
 	struct HCN_handshake *handshake = (struct HCN_handshake *)&packet;	// get a handshake packet pointer.
 	struct HCN_keyvalue_packet *keyvalue_packet = (HCN_keyvalue_packet *)&packet;// get a keyvalue packet pointer.
 	struct HCN_keyvalue_packet keyvalue;
-			
-	length = hcn_decode(&packet, (struct HCN_packet *)our_packet);		// before we do anything, hcn_decode it.
 
+	encoded_length = wcslen(our_packet);
+	if (encoded_preamble->encoded_length != encoded_length) {		// The preamble is setup specifically so that we can look at it's contents without decoding first.
+		hcn_logger(HCN_LOG_DEBUG, "hcn_process_chat(): length of encoded packet doesn't match - %d vs. %d", encoded_length, encoded_preamble->encoded_length);
+	}
+
+	length = hcn_decode(&packet, (struct HCN_packet *)our_packet);		// Now, hcn_decode it.
+
+	if (length != preamble->packet_length) {
+		hcn_logger(HCN_LOG_DEBUG, "hcn_process_chat(): length of decoded packet doesn't match - %d vs. %d", length, encoded_preamble->packet_length);
+	}
 	if (!hcn_valid_packet(&packet, chat_type)) {
 		hcn_logger(HCN_LOG_DEBUG, "hcn_process_chat(): Invalid packet received");
 		return false;
