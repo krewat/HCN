@@ -45,23 +45,28 @@
 
 */
 
+#pragma once
+
 #include <memory>
+
+// We need to pack packets as densely as possible, so set this:
+#pragma pack(push, 1)
 
 // Basic data structures and enums for packets.
 //	Care is taken to make sure enums start at 1 to keep the number of zeroes to a minimum.
 
 #define HCN_CHAT_TYPE	6						// This is an unused chat type that should just "pass through".
-												// Sehe's NetEvents used chat type 5.
+									// Sehe's NetEvents used chat type 5.
 
 // What are we, Server or Client?
-enum HCN_OUR_SIDE {
+enum HCN_OUR_SIDE : unsigned char {
 	HCN_WE_ARE_UNKNOWN = 0,
 	HCN_SERVER,
 	HCN_CLIENT
 };
 
 // Server type
-enum HCN_SERVER_TYPE {
+enum HCN_SERVER_TYPE : unsigned char {
 	HCN_NOT_A_SERVER = 0,
 	HCN_SERVER_SAPP,
 	HCN_SERVER_PHASOR,
@@ -69,7 +74,7 @@ enum HCN_SERVER_TYPE {
 };
 
 // Client type.
-enum HCN_CLIENT_TYPE {
+enum HCN_CLIENT_TYPE : unsigned char {
 	HCN_NOT_A_CLIENT = 0,
 	HCN_CLIENT_HAC2,
 	HCN_CLIENT_CHIMERA 
@@ -96,25 +101,64 @@ enum HCN_CLIENT_TYPE {
 #define HCN_VALUE_LENGTH	128
 #define HCN_KEYVALUE_LENGTH	HCN_KEY_LENGTH + HCN_VALUE_LENGTH + 1
 
-// Zero encoding requires we define a known tag of sorts. If this tag is encountered, there is ALWAYS a next
+// Zero encoding requires we define a known tag. If this tag is encountered, there is ALWAYS a next
 //	byte that indicates what the desired byte should be. Remember, this is wchar_t based, so we only have to
-//	encode a full 16-bit zero. Anything else does not need to be.
+//	encode a full 16-bit zero. 
 #define	HCN_ENCODE_TAG		0xFFFF				// Tag. Not a valid UNICODE (UTF-16) character.
 #define HCN_ENCODE_ZERO		0xFF01				// If second 16-bit character is this, it decodes to a single 0x0000
-#define HCN_ENCODE_ORIGINAL 0xFFFF				// If second 16-bit character is this, it decodes to a 0xFFFF
+#define HCN_ENCODE_ORIGINAL	0xFFFF				// If second 16-bit character is this, it decodes to a 0xFFFF
+
+
+// A 3D vector (location, velocity, whatever). We need to define this here so that the application can actually use the
+//	data that HCN provides.
+struct HCN_vect3d {
+	float x, y, z;
+
+	void clear() {
+		x = y = z = 0.0;
+	}
+
+	bool valid() {
+		return this->x != 0.0 || this->y != 0.0 || this->z != 0.0;
+	}
+
+	bool operator=(HCN_vect3d *check)
+	{
+		return this->x == check->x && this->y == check->y && this->z == check->z;
+	}
+
+	HCN_vect3d& operator*=(float rhs)
+	{
+		x *= rhs;
+		y *= rhs;
+		z *= rhs;
+		return *this;
+	}
+
+};
+
 
 // Packet type. Some of these are bidirectional, some are one-sided. BI = bidirectional. Client comes from client, Server comes from server.
-enum HCN_packet_type {
+enum HCN_packet_type : unsigned char {
 	HCN_PACKET_HANDSHAKE = 1,				// BI - Start a conversation with a client. Client sends this first. Server replies in kind.
+	HCN_PACKET_DATAPOINT,					// BI - Report or update a datapoint. INT, FLOAT, whatever. Time remaining and tickrate are the first uses.
+	HCN_PACKET_VECTOR,					// BI - Update multiple vectors. Usually server->client for biped location/velocity, or tag locations like flags.
 	HCN_PACKET_KEYVALUE					// Set a key to a value. SJ=ON, SJ=OFF, MTV=ON, etc.
 };
 
 // States for the state machine. At various stages of handshake, version exchange, and whatever follows that, we need to track state.
-enum HCN_state {
+enum HCN_state : unsigned char {
 	HCN_STATE_NONE = 1,					// we haven't done anything yet. This indicates a handshake needs to be performed.
 	HCN_STATE_HANDSHAKE_C2S,				// Client sent a handshake to the server, waiting for a handshake packet in response which includes server's version, etc.
 	HCN_STATE_HANDSHAKE_S2C,				// Server sent a handshake to the client, waiting for a success response 
 	HCN_STATE_RUNNING					// General running state. We're good to send or receive events as needed.
+};
+
+//
+// Packet definitions.
+//
+struct HCN_packet {						// Generic packet. 
+	char data[HCN_MAX_PACKET_LENGTH];
 };
 
 // The preamble to every packet.
@@ -127,23 +171,7 @@ struct HCN_preamble {
 
 };
 
-// HCN_keyvalue - takes a variable-length string of the form "key=value".
-struct HCN_keyvalue_packet {
-	struct HCN_preamble preamble;
-
-	char keyvalue_length;					// Length of the key value pair.
-	char keyvalue[HCN_KEYVALUE_LENGTH];			// an ASCII key-value pair, of the form "key=value". SJ=ON or SJ=OFF for example.
-
-	HCN_keyvalue_packet() { memset(keyvalue, 0, HCN_KEYVALUE_LENGTH); } // On construction, zero out the entire string.
-
-};
-
-// Packet definitions.
-struct HCN_packet {						// Generic packet. 
-	char data[HCN_MAX_PACKET_LENGTH];
-};
-
-// HCN_PACKET_HANDSHAKE - A handshake packet. Includes versioning. 
+// HCN_handshake - A handshake packet. Includes versioning. 
 struct HCN_handshake {						// A handshake packet.
 	struct HCN_preamble preamble;				// Always need a preamble.
 
@@ -158,10 +186,105 @@ struct HCN_handshake {						// A handshake packet.
 	HCN_handshake() { memset(version, 0, HCN_KEYVALUE_LENGTH); } // On construction, zero out the entire string.
 };
 
+//
+// HCN data values - provide a mechanism to monitor or update certain data values on the client. 
+//			maybe more later. First use will be time remaining.
+
+#define HCN_MAX_DATAPOINTS	6				// We can update up to 6 data points at a time.
+
+// HCN_datapoint_type - List of data points we can update.
+enum HCN_datapoint_type : unsigned char {
+	HCN_DATAPOINT_NOT_DEFINED,				// Don't use zero for anything.
+	HCN_DATAPOINT_TIMEREMAINING,				// Time remaining.
+	HCN_DATAPOINT_TICKRATE					// The current tickrate.
+};
+
+// A single datapoint.
+struct HCN_datapoint {
+	HCN_datapoint_type dp_type;				// The actual datapoint type.
+	union {							// Provide support for the following:
+		short int dp_shortint;
+		int dp_int;
+		unsigned int dp_uint;
+		float dp_float;
+		//double dp_double;				// Not wanting to go full 64-bit yet.
+	};
+};
+
+// A datapoint packet.
+struct HCN_datapoint_packet {
+	struct HCN_preamble preamble;
+
+	unsigned char dp_count;					// The number of datapoints in this packet.
+	struct HCN_datapoint dps[HCN_MAX_DATAPOINTS];		// And the actual datapoints.
+};
+
+typedef bool(*HCN_callback_datapoint)(int player_number, HCN_datapoint_type dp_type, struct HCN_datapoint *dp);
+
+// A way to define a list of callbacks for altering datapoints.
+struct HCN_datapoint_dispatch {
+	HCN_datapoint_type datapoint_type;
+	HCN_callback_datapoint callback;
+};
+
+
+
+//
+// HCN vectors - provide a mechanism to monitor or update vectors, of different types, without wasting packets.
+//
+
+#define HCN_MAX_VECTORS		4				// Max vectors in a single packet. Because of zero encoding, we don't want to overrun the max packet length.
+
+// HCN_vector_type - List of vectors we can update
+enum HCN_vector_type : unsigned char {
+	HCN_VECTOR_NOT_DEFINED,
+	HCN_VECTOR_BIPED_LOCATION,				// BIPED location
+	HCN_VECTOR_BIPED_VELOCITY,				// BIPED velocity
+	HCN_VECTOR_RED_FLAG,					// Sync the location of the red flag.
+	HCN_VECTOR_BLUE_FLAG					// Sync the location of the blue flag.
+};
+
+
+// HCN_vector - define a single vector.
+struct HCN_vector {
+	HCN_vector_type vector_type;				// The vector type to update.
+	struct HCN_vect3d vector;				// The actual vector - x/y/z
+};
+
+// HCN_vector_packet - a packet that can contain multiple vector updates.
+//	More than one vector can be updated at once, up to 4 at a time.
+struct HCN_vector_packet {
+	struct HCN_preamble preamble;
+
+	unsigned char vector_count;				// Count of vectors we're updating.
+	struct HCN_vector vectors[HCN_MAX_VECTORS];		// Define the array of vectors.
+
+};
+
+typedef bool(*HCN_callback_vector)(int player_number, HCN_vector_type, struct HCN_vect3d *vector);
+
+// A way to define a list of callbacks for altering vectors.
+struct HCN_vector_dispatch {
+	HCN_vector_type vector_type;
+	HCN_callback_vector callback;
+};
+
+
+// HCN_keyvalue - takes a variable-length string of the form "key=value".
+struct HCN_keyvalue_packet {
+	struct HCN_preamble preamble;
+
+	char keyvalue_length;					// Length of the key value pair.
+	char keyvalue[HCN_KEYVALUE_LENGTH];			// an ASCII key-value pair, of the form "key=value". SJ=ON or SJ=OFF for example.
+
+	HCN_keyvalue_packet() { memset(keyvalue, 0, HCN_KEYVALUE_LENGTH); } // On construction, zero out the entire string.
+
+};
+
 // HCN_callback_keyvalue - used by the application to define a callback for a key/value pair.
-//								int player_number is supplied by the application and is simply passed through to the callback function unmodified.
-//								char *key is provided by us, copied from the key-value pair array the application provides.
-//								char *value is provided by the application, as a string array to copy the value to. MUST adhere to HCN_VALUE_LENGTH
+//	int player_number is supplied by the application and is simply passed through to the callback function unmodified.
+//	char *key is provided by us, copied from the key-value pair array the application provides.
+//	char *value is provided by the application, as a string array to copy the value to. MUST adhere to HCN_VALUE_LENGTH
 typedef bool(*HCN_callback_keyvalue)(int player_number, char *key, char *value);
 
 // HCN_key_dispatch - Application will use this to define an array of key callback functions.
@@ -170,12 +293,15 @@ struct HCN_key_dispatch {
 	HCN_callback_keyvalue callback;
 };
 
+
+
 // Define a way to list keys and values. Useful for decoding ENUMS into text.
 struct HCN_enum_to_string {
 	int e_num;
 	char *name;
 };
 
+#pragma pack(pop)
 
 // An external logger callback. Set by hcn_logger_callback(...) - so a caller can log HCN errors or debug output through it's own logger function
 typedef void(*HCN_logger_callback)(int level, const char *string);
@@ -183,38 +309,43 @@ typedef void(*HCN_logger_callback)(int level, const char *string);
 // An external "packet sender" that the application defines. Takes player_number and a packet.
 typedef void(*HCN_packet_sender)(int player_number, struct HCN_packet *packet);
 
-
 // Levels for HCN logger.
-#define HCN_LOG_FATAL	0					// Completely fatal.
-#define HCN_LOG_ERROR	1					// An error, but we can deal with it.
-#define HCN_LOG_WARN	2					// Warning.
-#define HCN_LOG_INFO	3					// General Info that we might not care about
-#define HCN_LOG_DEBUG	4					// Full-on debug mode.
-#define HCN_LOG_DEBUG2	5					// even more debugging for certain things like web events and such.
-
+enum HCN_log_level {
+	HCN_LOG_FATAL = 0,					// Completely fatal.
+	HCN_LOG_ERROR,						// An error, but we can deal with it.
+	HCN_LOG_WARN,						// Warning.
+	HCN_LOG_INFO,						// General Info that we might not care about
+	HCN_LOG_DEBUG,						// Full-on debug mode.
+	HCN_LOG_DEBUG2						// even more debugging for certain things like web events and such.
+};
 
 // **********************************************
 // All externals are below. Data locations first:
 // **********************************************
 
 // The current HCN state.
-extern enum HCN_state hcn_state[HCN_MAX_PLAYERS];
+extern HCN_state hcn_state[HCN_MAX_PLAYERS];
 extern char hcn_our_version[HCN_VALUE_LENGTH];
 
 // What we are, client or server. And what type.
-extern enum HCN_OUR_SIDE hcn_our_side;
-extern enum HCN_SERVER_TYPE hcn_server_type;
-extern enum HCN_CLIENT_TYPE hcn_client_type[HCN_MAX_PLAYERS];
+extern HCN_OUR_SIDE hcn_our_side;
+extern HCN_SERVER_TYPE hcn_server_type;
+extern HCN_CLIENT_TYPE hcn_client_type[HCN_MAX_PLAYERS];
 
 // Functions. Careful, some are overloaded...
 extern void hcn_logger(int level, const char *string, ...);
+extern int hcn_get_debug_level();
+extern void hcn_set_debug_level(int level);
 extern void hcn_client_start();
 extern void hcn_set_packet_sender(HCN_packet_sender packet_sender);
+extern void hcn_set_datapoint_callback_list(HCN_datapoint_dispatch *datapoint_list, int datapoint_list_length);
+extern void hcn_set_vector_callback_list(HCN_vector_dispatch *vector_list, int vector_list_length);
 extern void hcn_set_keyvalue_callback_list(HCN_key_dispatch *key_list);
-extern void hcn_what_we_are(enum HCN_OUR_SIDE our_side, enum HCN_CLIENT_TYPE client_type);
-extern void hcn_what_we_are(enum HCN_OUR_SIDE our_side, enum HCN_SERVER_TYPE client_type);
+extern void hcn_what_we_are(HCN_OUR_SIDE our_side, HCN_CLIENT_TYPE client_type);
+extern void hcn_what_we_are(HCN_OUR_SIDE our_side, HCN_SERVER_TYPE client_type);
 
 extern void hcn_init(char *version);
+extern void hcn_on_tick();
 extern void hcn_set_logger_callback(HCN_logger_callback callback);
 extern void hcn_clear_player(int player_number);
 extern bool hcn_valid_packet(struct HCN_packet *packet, unsigned int chat_type);
@@ -222,5 +353,10 @@ extern int hcn_encode(struct HCN_packet *packet, struct HCN_packet *source, int 
 extern int hcn_decode(struct HCN_packet *packet, struct HCN_packet *source);
 extern bool hcn_running(int player_number);
 extern bool hcn_process_chat(int player_number, int chat_type, wchar_t *our_packet);
+extern bool hcn_datapoint_packet_handler(int player_number, HCN_packet *packet);
+extern bool hcn_vector_packet_handler(int player_number, HCN_packet *packet);
 extern bool hcn_send_keyvalue(int player_number, char *keyvalue);
+extern bool hcn_send_datapoints(int player_number, struct HCN_datapoint *dps, int dp_count);
+extern bool hcn_send_vectors(int player_number, struct HCN_vector *vectors, int vector_count);
+
 

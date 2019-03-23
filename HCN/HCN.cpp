@@ -58,12 +58,16 @@
 #include <tchar.h>
 
 // The current HCN state.
-enum HCN_state hcn_state[HCN_MAX_PLAYERS];
+HCN_state hcn_state[HCN_MAX_PLAYERS];
+
+// A little bit of a state machine. Keep track of last state, compared to current state, so we can do certain things when the state changes.
+//	A good example of this is once we go to RUNNING, send the client_id key-value pair.
+HCN_state hcn_last_state[HCN_MAX_PLAYERS];
 
 // What we are, client or server. And what type.
-enum HCN_OUR_SIDE hcn_our_side = HCN_WE_ARE_UNKNOWN;
-enum HCN_SERVER_TYPE hcn_server_type = HCN_NOT_A_SERVER;
-enum HCN_CLIENT_TYPE hcn_client_type[HCN_MAX_PLAYERS];
+HCN_OUR_SIDE hcn_our_side = HCN_WE_ARE_UNKNOWN;
+HCN_SERVER_TYPE hcn_server_type = HCN_NOT_A_SERVER;
+HCN_CLIENT_TYPE hcn_client_type[HCN_MAX_PLAYERS];
 
 // Keep a copy of the other side's handshake packet. This can include version, and other pertinent info.
 struct HCN_handshake hcn_other_side[HCN_MAX_PLAYERS];
@@ -72,10 +76,18 @@ char hcn_our_version[HCN_VALUE_LENGTH] = { 0 };
 
 // Place to set the logger callback for everything.
 HCN_logger_callback hcn_logger_callback = NULL;
-int hcn_debug_level = HCN_LOG_DEBUG2;
+int hcn_debug_level = HCN_LOG_INFO;
 
 // Send packet function, provided by application.
 HCN_packet_sender hcn_packet_sender = NULL;
+
+// Callbacks for datapoint updates are done through a single array supplied by the application:
+struct HCN_datapoint_dispatch *hcn_datapoint_dispatch_list = NULL;
+int hcn_datapoint_dispatch_list_entries = 0;
+
+// Callbacks for vector updates are also done through a single array supplied by the application:
+struct HCN_vector_dispatch *hcn_vector_dispatch_list = NULL;
+int hcn_vector_dispatch_list_entries = 0;
 
 // Callbacks for various key/value pairs are done through a single array supplied by the application:
 struct HCN_key_dispatch *hcn_key_dispatch_list = NULL;
@@ -107,18 +119,42 @@ char *hcn_enum_to_string(int e_num, HCN_enum_to_string *enum_list) {
 	}
 	return "";
 }
+
+// Set the HCN debug level.
+void hcn_set_debug_level(int level) {
+	hcn_debug_level = level;
+}
+
+int hcn_get_debug_level() {
+	return hcn_debug_level;
+}
+
 // Set the HCN logger callback
 void hcn_set_logger_callback(HCN_logger_callback callback) {
 
 	hcn_logger_callback = callback;
-	hcn_logger(HCN_LOG_DEBUG, "Logger function set");
+	hcn_logger(HCN_LOG_DEBUG2, "Logger function set");
 }
 
 // Set the packet sender HCN will use.
 void hcn_set_packet_sender(HCN_packet_sender sender) {
 
 	hcn_packet_sender = sender;
-	hcn_logger(HCN_LOG_DEBUG, "Packet sender function set");
+	hcn_logger(HCN_LOG_DEBUG2, "Packet sender function set");
+}
+
+void hcn_set_datapoint_callback_list(HCN_datapoint_dispatch *datapoint_list, int datapoint_list_length) {
+
+	hcn_datapoint_dispatch_list = datapoint_list;
+	hcn_datapoint_dispatch_list_entries = datapoint_list_length;
+
+}
+
+void hcn_set_vector_callback_list(HCN_vector_dispatch *vector_list, int vector_list_length) {
+
+	hcn_vector_dispatch_list = vector_list;
+	hcn_vector_dispatch_list_entries = vector_list_length;
+
 }
 
 void hcn_set_keyvalue_callback_list(HCN_key_dispatch *key_list) {
@@ -135,18 +171,20 @@ void hcn_logger(int level, const char *string, ...) {
 
 	va_start(ap, string);
 
-	bufptr += sprintf_s(buffer, "HCN: ");					// prepend everything with HCN. If caller wants to, it can interpret this and adjust accordingly (like HSE does).
+	if (level <= hcn_debug_level) {
+		bufptr += sprintf_s(buffer, "HCN: ");					// prepend everything with HCN. If caller wants to, it can interpret this and adjust accordingly (like HSE does).
 
-	// *** For some reason, vsprintf_s crashed HAC2, but not HSE. Further investigation warranted, See BUG id 315
-	// http://uhnet1.kilonet.net/bugzilla/show_bug.cgi?id=315
-	//if (vsprintf_s(&buffer[bufptr], 1024 - bufptr, string, ap) == -1) {	// Safely print into the buffer whatever we were given.
+		// *** For some reason, vsprintf_s crashed HAC2, but not HSE. Further investigation warranted, See BUG id 315
+		// http://uhnet1.kilonet.net/bugzilla/show_bug.cgi?id=315
+		//if (vsprintf_s(&buffer[bufptr], 1024 - bufptr, string, ap) == -1) {	// Safely print into the buffer whatever we were given.
 
-	if (vsprintf(&buffer[bufptr],  string, ap) == -1) {			// Print into the buffer whatever we were given.
-		strcpy(buffer, "HCN: vsprintf_s failed");
-	}
+		if (vsprintf(&buffer[bufptr], string, ap) == -1) {			// Print into the buffer whatever we were given.
+			strcpy(buffer, "HCN: vsprintf_s failed");
+		}
 
-	if (hcn_logger_callback != NULL) {					// Don't bother if the callback is not set.
-		hcn_logger_callback(level, buffer);
+		if (hcn_logger_callback != NULL) {					// Don't bother if the callback is not set.
+			hcn_logger_callback(level, buffer);
+		}
 	}
 
 	va_end(ap);
@@ -157,33 +195,40 @@ void hcn_logger(int level, const char *string, ...) {
 void hcn_init(char *version) {
 
 	// For the love of Christ, why would they do this?
-	_CrtSetDebugFillThreshold(0);						// Turn off filling destination buffers with 0xFE for "safe" functions.
+	_CrtSetDebugFillThreshold(0);							// Turn off filling destination buffers with 0xFE for "safe" functions.
 
 	for (int i = 0; i < HCN_MAX_PLAYERS; i++) {
+		hcn_state[i] = HCN_STATE_NONE;
 		hcn_client_type[i] = HCN_NOT_A_CLIENT;
 		memset(&hcn_other_side[i], 0, sizeof(struct HCN_handshake));
 	}
 	strcpy_s(hcn_our_version, version);
-	hcn_logger(HCN_LOG_INFO, "HCN initialized, caller version = %s", hcn_our_version);
-	//hcn_logger(HCN_LOG_INFO, "HCN initialized");
+	hcn_logger(HCN_LOG_DEBUG, "HCN initialized, caller version = %s", hcn_our_version);
 		
+}
+
+// hcn_on_tick() - called every tick - doesn't HAVE to be every tick, but it's a prefect place to call it from.
+void hcn_on_tick() {
+
+	// for now, this does nothing. yet.
+
 }
 
 // Clear a player's state on quit, or join.
 void hcn_clear_player(int player_number) {
 	int pi = (player_number == 0) ? 0 : player_number - 1;
 
-	hcn_logger(HCN_LOG_DEBUG, "Clearing player state player = %d", player_number);
+	hcn_logger(HCN_LOG_DEBUG2, "Clearing player state player = %d", player_number);
 	hcn_state[pi] = HCN_STATE_NONE;
 
 }
 
 // Set what we are, server or client, and what type of server or client. Overloaded function.
-void hcn_what_we_are(enum HCN_OUR_SIDE our_side, enum HCN_CLIENT_TYPE client_type) {
+void hcn_what_we_are(HCN_OUR_SIDE our_side, HCN_CLIENT_TYPE client_type) {
 	hcn_our_side = our_side;
 	hcn_client_type[0] = client_type;					// Since we're a client, we only need to define the first entry in hcn_client_type
 }
-void hcn_what_we_are(enum HCN_OUR_SIDE our_side, enum HCN_SERVER_TYPE server_type) {
+void hcn_what_we_are(HCN_OUR_SIDE our_side, HCN_SERVER_TYPE server_type) {
 	hcn_our_side = our_side;
 	hcn_server_type = server_type;
 }
@@ -210,11 +255,10 @@ bool hcn_running(int player_number) {
 // ** NOTE - THIS FUNCTION IS DESTRUCTIVE. It will return a pointer to the value, and termnate
 //				the key by overwriting the = character with a zero
 char *hcn_key_value_parse(char *input) {
-	int i;
 	char *p;
 
 	p = strchr(input, '=');							// First, find the =
-	if (i == NULL) return NULL;						// if it wasn't found, abort.
+	if (p == NULL) return NULL;						// if it wasn't found, abort.
 	
 	*p++ = 0;								// terminate the key, and remove the =
 	return p;								// Return a pointer to the value.
@@ -267,30 +311,67 @@ int hcn_encode(struct HCN_packet *packet, struct HCN_packet *source, int packet_
 //			ALSO - takes a string of 16-bit characters, with a 16-bit null termination.
 //					
 int hcn_decode(struct HCN_packet *packet, struct HCN_packet *source) {
+	wchar_t *op = (wchar_t *)packet;
 	wchar_t *p = (wchar_t *)packet;
 	wchar_t *s = (wchar_t *)source;
 	int length = 0;
-	int packet_length = wcslen((wchar_t *)source) + 1;			// length of packet, always include a null terminator.
+	int packet_length = wcslen(s);						// length of encoded packet
+
+	/*
+	char buffer[1024];
+	int bufptr = 0;
+	int cols = 0;
+	bufptr += sprintf(buffer + bufptr, "%d ", packet_length);
+	for (int i = 0; i < packet_length; i++) {
+		bufptr += sprintf(buffer + bufptr, "%04x ", s[i]);
+		cols++;
+		if (cols > 10) {
+			hcn_logger(HCN_LOG_DEBUG2, buffer);
+			bufptr = cols = 0;
+		}
+
+	}
+	if (cols > 0 ) hcn_logger(HCN_LOG_DEBUG2, buffer);
+	*/
 
 	while (length < HCN_MAX_PACKET_LENGTH / 2 && length < packet_length) {
-		hcn_logger(HCN_LOG_DEBUG2, "hcn_decode: packet = %04x", *s);
 		if (*s == HCN_ENCODE_TAG) {					// If we find the tag for a special sequence in the incoming packet,
 			s++;
 			if (*s == HCN_ENCODE_ZERO) {				// And it's a zero tag,
 				*p++ = 0;					// store a 16-bit zero.
+				packet_length--;				// need to reduce the input source packet length for each encoding.
 			}
 			else if (*s == HCN_ENCODE_TAG) {			// if it's a double sequence tag,
 				*p++ = HCN_ENCODE_TAG;				// store a single sequence tag.
+				packet_length--;				// need to reduce the input source packet length for each encoding.
 			}
-			s++;							// Don't know WTF happened, just skip it.
+			else {
+				return 0;					// This decode failed. There was garbage in the packet.
+			}
+			s++;							// If we got here, it means it was a valid ENCODE 
 		}
 		else {
 			*p++ = *s++;						// If not a special tag, just copy the 16-bit character.
 		}
-		length ++;							// processed a 16-bit character.
+		length++;							// processed a 16-bit character.
 	}
 
-	return length;								// This should return the 8-bit character length of the resulting packet.
+	/*
+	bufptr = cols = 0;
+	bufptr += sprintf(buffer + bufptr, "%d ", length);
+	for (int i = 0; i < length; i++) {
+		bufptr += sprintf(buffer + bufptr, "%04x ", op[i]);
+		cols++;
+		if (cols > 10) {
+			hcn_logger(HCN_LOG_DEBUG2, buffer);
+			bufptr = cols = 0;
+		}
+
+	}
+	if (cols > 0) hcn_logger(HCN_LOG_DEBUG2, buffer);
+	*/
+
+	return length;
 
 }
 
@@ -346,20 +427,20 @@ bool hcn_process_chat(int player_number, int chat_type, wchar_t *our_packet) {
 		return false;
 	}
 
-	hcn_logger(HCN_LOG_DEBUG, "hcn_process_chat(): got a valid packet");
+	hcn_logger(HCN_LOG_DEBUG2, "hcn_process_chat(): got a valid packet");
 
 	// Decode packet type
 	switch (preamble->packet_type) {
 		
 	// Handle handshake packets
 	case HCN_PACKET_HANDSHAKE:
-		hcn_logger(HCN_LOG_DEBUG, "hcn_process_chat(): Got a handshake packet");
+		hcn_logger(HCN_LOG_DEBUG2, "hcn_process_chat(): Got a handshake packet");
 
 		switch (hcn_our_side) {						// Server or client, we need to make decisions.
 		case HCN_SERVER:						// We are a server.
-			hcn_logger(HCN_LOG_DEBUG, "hcn_process_chat(): We are a SERVER and got a packet from a client");
+			hcn_logger(HCN_LOG_DEBUG2, "hcn_process_chat(): We are a SERVER and got a packet from a client");
 			if (handshake->hcn_state == HCN_STATE_HANDSHAKE_C2S) {	// This is a client talking to us, who wants to go to state RUNNING
-				hcn_logger(HCN_LOG_DEBUG, "hcn_process_chat(): Got a client calling in, player_number %d", player_number);
+				hcn_logger(HCN_LOG_DEBUG2, "hcn_process_chat(): Got a client calling in, player_number %d", player_number);
 				hcn_state[pi] = HCN_STATE_RUNNING;		// Set the current state of this client to running.
 				//hcn_other_side[pi] = *handshake;		// And keep a copy of the handshake packet.
 				memcpy(&hcn_other_side[pi], handshake, hcn_length(&handshake->preamble, handshake->version) + strlen(handshake->version) + 1); // copy out just the part we need.
@@ -368,9 +449,9 @@ bool hcn_process_chat(int player_number, int chat_type, wchar_t *our_packet) {
 				handshake->hcn_state = HCN_STATE_HANDSHAKE_S2C;	// tell the client that our state is Server->Client
 				handshake->hcn_type = hcn_server_type;		// make sure we tell the client what we are.
 				strcpy(handshake->version, hcn_our_version);
-				hcn_logger(HCN_LOG_DEBUG, "hcn_process_chat(): Sending back a handshake with state %d", handshake->hcn_state);
+				hcn_logger(HCN_LOG_DEBUG2, "hcn_process_chat(): Sending back a handshake with state %d", handshake->hcn_state);
 
-				hcn_logger(HCN_LOG_INFO, "Client version %s %s", hcn_enum_to_string(hcn_other_side[pi].hcn_type, HCN_client_names), hcn_other_side[pi].version);
+				hcn_logger(HCN_LOG_DEBUG, "Client version %s %s", hcn_enum_to_string(hcn_other_side[pi].hcn_type, HCN_client_names), hcn_other_side[pi].version);
 
 				hcn_encode(&reply_packet, &packet, hcn_length(&handshake->preamble, handshake->version) + strlen(handshake->version) + 1);
 
@@ -384,17 +465,17 @@ bool hcn_process_chat(int player_number, int chat_type, wchar_t *our_packet) {
 			}
 			break;;
 		case HCN_CLIENT:
-			hcn_logger(HCN_LOG_DEBUG, "hcn_process_chat(): We are a CLIENT and got a packet from a server");
+			hcn_logger(HCN_LOG_DEBUG2, "hcn_process_chat(): We are a CLIENT and got a packet from a server");
 
 			if (handshake->hcn_state == HCN_STATE_HANDSHAKE_S2C && hcn_other_side[0].hcn_state==HCN_STATE_HANDSHAKE_C2S) { // This is from a server, so check the "other side's" state.
-				hcn_logger(HCN_LOG_DEBUG, "hcn_process_chat(): Got a server calling in");
+				hcn_logger(HCN_LOG_DEBUG2, "hcn_process_chat(): Got a server calling in");
 				hcn_state[0] = HCN_STATE_RUNNING;		// we got back a handshake from the server, so we're running.
 				hcn_other_side[0] = *handshake;			// And keep a copy of the handshake packet.
 				hcn_other_side[0].hcn_state = HCN_STATE_RUNNING;// Set our copy of the handshake for this server, to state=RUNNING.
 
-				hcn_logger(HCN_LOG_DEBUG, "hcn_process_chat(): Got handshake from server");
+				hcn_logger(HCN_LOG_DEBUG2, "hcn_process_chat(): Got handshake from server");
 
-				hcn_logger(HCN_LOG_INFO, "Server version %s %s", hcn_enum_to_string(hcn_other_side[pi].hcn_type, HCN_server_names), hcn_other_side[pi].version);
+				hcn_logger(HCN_LOG_DEBUG, "Server version %s %s", hcn_enum_to_string(hcn_other_side[pi].hcn_type, HCN_server_names), hcn_other_side[pi].version);
 
 				return true;					// we did something, YAY!
 			}
@@ -408,13 +489,26 @@ bool hcn_process_chat(int player_number, int chat_type, wchar_t *our_packet) {
 		}
 		break;;
 
+	// Datapoints.
+	case HCN_PACKET_DATAPOINT:
+		hcn_logger(HCN_LOG_DEBUG2, "hcn_process_chat(): Got a list of datapoint values");
+		return hcn_datapoint_packet_handler(player_number, &packet);
+		break;;
+
+	// Vector updates.
+	case HCN_PACKET_VECTOR:
+		hcn_logger(HCN_LOG_DEBUG2, "hcn_process_chat(): Got a list of vector values");
+		return hcn_vector_packet_handler(player_number, &packet);
+		break;;
+
+
 	// Keyvalue pair.
 	case HCN_PACKET_KEYVALUE:
-		hcn_logger(HCN_LOG_DEBUG, "hcn_process_chat(): Got a keyvalue packet");
+		hcn_logger(HCN_LOG_DEBUG2, "hcn_process_chat(): Got a keyvalue packet");
 
 		if (keyvalue_packet->keyvalue_length == strlen(keyvalue_packet->keyvalue)) {
 
-			hcn_logger(HCN_LOG_DEBUG, "keyvalue = %s for player %d", keyvalue_packet->keyvalue, player_number);
+			hcn_logger(HCN_LOG_DEBUG2, "keyvalue = %s for player %d", keyvalue_packet->keyvalue, player_number);
 
 			// See if we have a callback for this key/value pair.
 			if (hcn_key_dispatch_list != NULL) {
@@ -456,9 +550,8 @@ bool hcn_send_keyvalue(int player_number, char *keyvalue) {
 		return false;
 	}
 
-	hcn_logger(HCN_LOG_DEBUG, "HCN sending keyvalue '%s' to player %d", keyvalue, player_number);
-
 	if (hcn_state[pi] == HCN_STATE_RUNNING) {				// if the state is "RUNNING" we can go ahead and send it.
+		hcn_logger(HCN_LOG_DEBUG2, "HCN sending keyvalue '%s' to player %d", keyvalue, player_number);
 		kv_packet.preamble.packet_type = HCN_PACKET_KEYVALUE;		// Packet type
 		kv_packet.keyvalue_length = strlen(keyvalue);			// make sure we have a char* length.
 		strcpy_s(kv_packet.keyvalue, HCN_KEYVALUE_LENGTH, keyvalue);	// Copy the keyvalue pair in.
@@ -474,3 +567,102 @@ bool hcn_send_keyvalue(int player_number, char *keyvalue) {
 
 }
 
+// hcn_datapoint_packet_handler() - Decode a datapoint packet. Assume the packet has already been decoded and verified.
+bool hcn_datapoint_packet_handler(int player_number, HCN_packet *packet) {
+	int i;
+	HCN_datapoint_type dp_type;
+	HCN_datapoint_packet *dps = (HCN_datapoint_packet *)packet;
+
+	for (i = 0; i < HCN_MAX_DATAPOINTS && i < dps->dp_count; i++) {
+		dp_type = dps->dps[i].dp_type;
+		if (dp_type == 0 || dp_type > hcn_datapoint_dispatch_list_entries) {
+			hcn_logger(HCN_LOG_DEBUG, "Invalid datapoint type %d", dp_type);
+			return false;						// ABORT if the datapoint type is unknown. Chances are the rest of the packet is bad anyway.
+		}
+		hcn_datapoint_dispatch_list[dp_type].callback(player_number, dp_type, &dps->dps[i]); // Call the application's handler for this vector type.
+	}
+	return true;
+
+}
+
+// hcn_vector_packet_handler() - Decode a vector packet. Assume the packet has already been decoded and verified.
+bool hcn_vector_packet_handler(int player_number, HCN_packet *packet) {
+	int i;
+	HCN_vector_type vt;
+	HCN_vector_packet *vectors = (HCN_vector_packet *)packet;
+
+	for (i = 0; i < HCN_MAX_VECTORS && i < vectors->vector_count; i++) {
+		vt = vectors->vectors[i].vector_type;
+		if (vt == 0 || vt > hcn_vector_dispatch_list_entries) {
+			hcn_logger(HCN_LOG_DEBUG, "Invalid vector type %d", vt);
+			return false;						// ABORT if the vector type is unknown. Chances are the rest of the packet is bad anyway.
+		}
+		hcn_vector_dispatch_list[vt].callback(player_number, vt, &vectors->vectors[i].vector); // Call the application's handler for this vector type.
+	}
+	return true;
+
+}
+
+// hcn_send_datapoints() - allow an application to provide a list of datapoints, and send them to the other side.
+bool hcn_send_datapoints(int player_number, struct HCN_datapoint *dps, int dp_count) {
+	int i, length;
+	struct HCN_datapoint_packet dp_packet;
+	struct HCN_packet *packet = (HCN_packet *)&dp_packet;
+	struct HCN_packet encoded_packet;
+
+	if (dp_count > HCN_MAX_DATAPOINTS) return false;			// make sure we're not asked to send too many.
+
+	// Find the length of the datapoint packet without any datapoints in it. This allows us to have a variable-length packet
+	//	dependent on how many datapoints we're supplied.
+	length = sizeof(struct HCN_datapoint_packet) - (sizeof(HCN_datapoint) * HCN_MAX_DATAPOINTS);
+
+	dp_packet.preamble.packet_type = HCN_PACKET_DATAPOINT;			// Set the packet type.
+
+	for (i = 0; i < HCN_MAX_DATAPOINTS && i < dp_count; i++) {		// Loop through the vectors provided to us.
+		dp_packet.dps[i] = dps[i];					// Copy out the datapoint.
+		length += sizeof(HCN_datapoint);				// Keep track of the length.
+	}
+
+	dp_packet.preamble.packet_length = length;				// Set the entire packet length.
+
+	dp_packet.dp_count = dp_count;
+
+	hcn_encode(&encoded_packet, packet, length);				// Encode it.
+
+	hcn_packet_sender(player_number, &encoded_packet);			// And we're done.
+
+	return true;
+
+}
+
+// hcn_send_vectors() - allow an application to provide a list of vectors, and send them to the other side.
+bool hcn_send_vectors(int player_number, struct HCN_vector *vectors, int vector_count) {
+	int i, length;
+	struct HCN_vector_packet vp;
+	struct HCN_packet *packet = (HCN_packet *)&vp;
+	struct HCN_packet encoded_packet;
+
+	if (vector_count > HCN_MAX_VECTORS) return false;			// make sure we're not asked to send too many.
+
+	// Find the length of the vector packet without any vectors in it. This allows us to have a variable-length packet
+	//	dependent on how many vectors we're supplied.
+	length = sizeof(struct HCN_vector_packet) - (sizeof(HCN_vector) * HCN_MAX_VECTORS);
+
+	vp.preamble.packet_type = HCN_PACKET_VECTOR;				// Set the packet type.
+
+	for (i = 0; i < HCN_MAX_VECTORS && i < vector_count; i++) {		// Loop through the vectors provided to us.
+		vp.vectors[i] = vectors[i];					// Copy out the vector.
+		length += sizeof(HCN_vector);					// Keep track of the length.
+	}
+
+	vp.preamble.packet_length = length;					// Set the entire packet length.
+	
+	vp.vector_count = vector_count;
+
+	hcn_encode(&encoded_packet, packet, length);				// Encode it.
+
+	hcn_packet_sender(player_number, &encoded_packet);			// And we're done.
+
+	return true;
+
+}
