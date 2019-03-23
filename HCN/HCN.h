@@ -26,6 +26,7 @@
 //
 // Every step of the way, consistency checking is a must. magic #, state in the initial handshake conversation,
 //	packet length, you name it. See HCN_packet_lengths array near the end of this include file.
+//
 
 /*
 
@@ -166,6 +167,7 @@ struct HCN_preamble {
 	unsigned short int magic;				// Always have a magic number.
 	unsigned char packet_type;				// Packet type.
 	unsigned char packet_length;				// Shouldn't need more than 256 bytes, zero encoding could make this much larger anyway.
+	unsigned char encoded_length;				// This is the encoded length, minus any zero terminationg (wchar_t)
 
 	HCN_preamble() { magic = HCN_MAGIC; };			// Always set the magic number on construction. 
 
@@ -306,8 +308,8 @@ struct HCN_enum_to_string {
 // An external logger callback. Set by hcn_logger_callback(...) - so a caller can log HCN errors or debug output through it's own logger function
 typedef void(*HCN_logger_callback)(int level, const char *string);
 
-// An external "packet sender" that the application defines. Takes player_number and a packet.
-typedef void(*HCN_packet_sender)(int player_number, struct HCN_packet *packet);
+// An external "application packet sender" that the application defines. Takes player_number and a packet.
+typedef void(*HCN_application_sender)(int player_number, struct HCN_packet *packet);
 
 // Levels for HCN logger.
 enum HCN_log_level {
@@ -337,7 +339,7 @@ extern void hcn_logger(int level, const char *string, ...);
 extern int hcn_get_debug_level();
 extern void hcn_set_debug_level(int level);
 extern void hcn_client_start();
-extern void hcn_set_packet_sender(HCN_packet_sender packet_sender);
+extern void hcn_set_packet_sender(HCN_application_sender application_sender);
 extern void hcn_set_datapoint_callback_list(HCN_datapoint_dispatch *datapoint_list, int datapoint_list_length);
 extern void hcn_set_vector_callback_list(HCN_vector_dispatch *vector_list, int vector_list_length);
 extern void hcn_set_keyvalue_callback_list(HCN_key_dispatch *key_list);
@@ -351,6 +353,7 @@ extern void hcn_clear_player(int player_number);
 extern bool hcn_valid_packet(struct HCN_packet *packet, unsigned int chat_type);
 extern int hcn_encode(struct HCN_packet *packet, struct HCN_packet *source, int packet_length);
 extern int hcn_decode(struct HCN_packet *packet, struct HCN_packet *source);
+extern void hcn_packet_sender(int player_number, HCN_packet *packet, int packet_length);
 extern bool hcn_running(int player_number);
 extern bool hcn_process_chat(int player_number, int chat_type, wchar_t *our_packet);
 extern bool hcn_datapoint_packet_handler(int player_number, HCN_packet *packet);

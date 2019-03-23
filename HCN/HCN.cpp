@@ -30,6 +30,17 @@
 // Key-value pairs are used for most things, because defining special packet types for each operation would be
 //	complicated, and TBH, silly.
 //
+//
+// NOTE: many functions are provided here to manipulate certain data that could very easily be done directly
+//	by the application. It's done this way to allow for future support for doing other HCN-specific things
+//	when a value is changed. 
+//
+// ALSO: HAC2 and HSE use a "shim" module to interface with HCN - the reason being to shield the application
+//	from interfacing directly with HCN. Any HCN changes can then be done in the shim, containing major
+//	changes to one or two source files, ala HAC2toHCN.cpp/HAC2toHCN.h
+//
+//	This arrangement should be used for any other applications that would use HCN. 
+//
 
 /*
 
@@ -61,7 +72,6 @@
 HCN_state hcn_state[HCN_MAX_PLAYERS];
 
 // A little bit of a state machine. Keep track of last state, compared to current state, so we can do certain things when the state changes.
-//	A good example of this is once we go to RUNNING, send the client_id key-value pair.
 HCN_state hcn_last_state[HCN_MAX_PLAYERS];
 
 // What we are, client or server. And what type.
@@ -74,25 +84,25 @@ struct HCN_handshake hcn_other_side[HCN_MAX_PLAYERS];
 
 char hcn_our_version[HCN_VALUE_LENGTH] = { 0 };
 
-// Place to set the logger callback for everything.
+// Logger callback function. The application provides this so we can output log information in whatever format the application wants.
 HCN_logger_callback hcn_logger_callback = NULL;
 int hcn_debug_level = HCN_LOG_INFO;
 
 // Send packet function, provided by application.
-HCN_packet_sender hcn_packet_sender = NULL;
+HCN_application_sender hcn_application_sender = NULL;
 
-// Callbacks for datapoint updates are done through a single array supplied by the application:
+// Callbacks to the application for datapoint updates
 struct HCN_datapoint_dispatch *hcn_datapoint_dispatch_list = NULL;
 int hcn_datapoint_dispatch_list_entries = 0;
 
-// Callbacks for vector updates are also done through a single array supplied by the application:
+// Callbacks to the application for vector updates
 struct HCN_vector_dispatch *hcn_vector_dispatch_list = NULL;
 int hcn_vector_dispatch_list_entries = 0;
 
-// Callbacks for various key/value pairs are done through a single array supplied by the application:
+// Callbacks to the application for various key/value pairs
 struct HCN_key_dispatch *hcn_key_dispatch_list = NULL;
 
-// Some enum key values. First up, server types.
+// Server types as enum/string pairs.
 struct HCN_enum_to_string HCN_server_names[] = {
 	{ HCN_NOT_A_SERVER, "none"},
 	{ HCN_SERVER_SAPP, "SAPP"},
@@ -101,6 +111,7 @@ struct HCN_enum_to_string HCN_server_names[] = {
 	{ -1, NULL}
 };
 
+// Client types as enum/string pairs.
 struct HCN_enum_to_string HCN_client_names[] = {
 	{ HCN_NOT_A_CLIENT, "none"},
 	{ HCN_CLIENT_HAC2, "HAC2"} ,
@@ -125,6 +136,7 @@ void hcn_set_debug_level(int level) {
 	hcn_debug_level = level;
 }
 
+// Get the HCN debug level.
 int hcn_get_debug_level() {
 	return hcn_debug_level;
 }
@@ -137,10 +149,10 @@ void hcn_set_logger_callback(HCN_logger_callback callback) {
 }
 
 // Set the packet sender HCN will use.
-void hcn_set_packet_sender(HCN_packet_sender sender) {
+void hcn_set_packet_sender(HCN_application_sender application_sender) {
 
-	hcn_packet_sender = sender;
-	hcn_logger(HCN_LOG_DEBUG2, "Packet sender function set");
+	hcn_application_sender = application_sender;
+	hcn_logger(HCN_LOG_DEBUG2, "Application packet sender function set");
 }
 
 void hcn_set_datapoint_callback_list(HCN_datapoint_dispatch *datapoint_list, int datapoint_list_length) {
@@ -375,14 +387,27 @@ int hcn_decode(struct HCN_packet *packet, struct HCN_packet *source) {
 
 }
 
-// hcn_client_start() - Start the handshake from the client-side.
+// hcn_packet_sender() - Called to send a packet that has not been encoded yet. We take care of the lengths, encoding, etc.
+//	Supplied length is BYTE
+void hcn_packet_sender(int player_number, HCN_packet *packet, int packet_length) {
+	HCN_preamble *preamble = (HCN_preamble *)packet;			// Get a preamble pointer.
+	HCN_packet encoded_packet;						// We need a place to encode the packet to.
+
+	preamble->packet_length = packet_length;				// First, store the unencoded packet length in 8-bit bytes.
+
+	preamble->encoded_length = hcn_encode(&encoded_packet, packet, packet_length);	// Encoded packet length is wchar_t (16-bit bytes).
+	hcn_application_sender(player_number, &encoded_packet);			// Send the packet using the supplied packet sender.
+
+}
+
+// hcn_client_start() - Start the handshake from the client-side. Client implies player index 0.
 void hcn_client_start() {
 	struct HCN_handshake handshake;
 	struct HCN_packet *packet = (struct HCN_packet *)&handshake;
 	struct HCN_packet enc_packet;
 	int length = 0;
 
-	if (hcn_packet_sender == NULL) {
+	if (hcn_application_sender == NULL) {
 		hcn_logger(HCN_LOG_WARN, "HCN packet sender not set when hcn_client_start() called!");
 		return;
 	}
@@ -394,11 +419,10 @@ void hcn_client_start() {
 	handshake.preamble.packet_type = HCN_PACKET_HANDSHAKE;			// make sure they know it's a handshake.
 	handshake.preamble.packet_length = length;				// Set the packet length.
 
-	handshake.hcn_type = hcn_client_type[0];				// We are HAC2.
+	handshake.hcn_type = hcn_client_type[0];				// We are whatever we were set to.
 	handshake.hcn_state = HCN_STATE_HANDSHAKE_C2S;				// And this is client-to-server.
 
-	length = hcn_encode(&enc_packet, packet, length);			// Encoded packet might have a longer length. AND, the length will now be wchar_t.
-	hcn_packet_sender(0, &enc_packet);					// Send the packet using the supplied packet sender.
+	hcn_packet_sender(0, packet, length);					// Send the packet, encoding it on the fly.
 
 	hcn_other_side[0].hcn_state = HCN_STATE_HANDSHAKE_C2S;			// Record that the other side was sent a Client->Server handshake packet.
 
@@ -448,14 +472,15 @@ bool hcn_process_chat(int player_number, int chat_type, wchar_t *our_packet) {
 				// Setup our reply.
 				handshake->hcn_state = HCN_STATE_HANDSHAKE_S2C;	// tell the client that our state is Server->Client
 				handshake->hcn_type = hcn_server_type;		// make sure we tell the client what we are.
+				
 				strcpy(handshake->version, hcn_our_version);
 				hcn_logger(HCN_LOG_DEBUG2, "hcn_process_chat(): Sending back a handshake with state %d", handshake->hcn_state);
 
 				hcn_logger(HCN_LOG_DEBUG, "Client version %s %s", hcn_enum_to_string(hcn_other_side[pi].hcn_type, HCN_client_names), hcn_other_side[pi].version);
 
-				hcn_encode(&reply_packet, &packet, hcn_length(&handshake->preamble, handshake->version) + strlen(handshake->version) + 1);
+				length = hcn_length(&handshake->preamble, handshake->version) + strlen(handshake->version) + 1; // Compute the un-encoded length in 8-bit bytes.
 
-				hcn_packet_sender(player_number, &packet);	// send our reply now.
+				hcn_packet_sender(player_number, &packet, length); // Send it.
 
 				return true;					// and tell the caller we did something.
 			}
@@ -542,11 +567,12 @@ bool hcn_process_chat(int player_number, int chat_type, wchar_t *our_packet) {
 // hcn_send_keyvalue() - send a key-value pair to the other side.
 bool hcn_send_keyvalue(int player_number, char *keyvalue) {
 	int pi = (player_number == 0) ? 0 : player_number - 1;
+	int length;
 	struct HCN_keyvalue_packet kv_packet;
 	struct HCN_packet *packet = (struct HCN_packet *)&kv_packet;
 
-	if (hcn_packet_sender == NULL) {
-		hcn_logger(HCN_LOG_WARN, "hcn_send_keyvalue(): Packet sender not set yet!");
+	if (hcn_application_sender == NULL) {
+		hcn_logger(HCN_LOG_WARN, "hcn_send_keyvalue(): Application packet sender not set yet!");
 		return false;
 	}
 
@@ -555,8 +581,8 @@ bool hcn_send_keyvalue(int player_number, char *keyvalue) {
 		kv_packet.preamble.packet_type = HCN_PACKET_KEYVALUE;		// Packet type
 		kv_packet.keyvalue_length = strlen(keyvalue);			// make sure we have a char* length.
 		strcpy_s(kv_packet.keyvalue, HCN_KEYVALUE_LENGTH, keyvalue);	// Copy the keyvalue pair in.
-		kv_packet.preamble.packet_length = hcn_length(&kv_packet.preamble, kv_packet.keyvalue) + kv_packet.keyvalue_length;
-		hcn_packet_sender(player_number, packet);			// and send the actual packet.
+		length = hcn_length(&kv_packet.preamble, kv_packet.keyvalue) + kv_packet.keyvalue_length; // Get the un-encoded length.
+		hcn_packet_sender(player_number, packet, length);		// and send the actual packet.
 		return true;
 	}
 	else {
@@ -623,13 +649,9 @@ bool hcn_send_datapoints(int player_number, struct HCN_datapoint *dps, int dp_co
 		length += sizeof(HCN_datapoint);				// Keep track of the length.
 	}
 
-	dp_packet.preamble.packet_length = length;				// Set the entire packet length.
+	dp_packet.dp_count = dp_count;						// Set the datapoint count.
 
-	dp_packet.dp_count = dp_count;
-
-	hcn_encode(&encoded_packet, packet, length);				// Encode it.
-
-	hcn_packet_sender(player_number, &encoded_packet);			// And we're done.
+	hcn_packet_sender(player_number, packet, length);			// Send it.
 
 	return true;
 
@@ -655,13 +677,9 @@ bool hcn_send_vectors(int player_number, struct HCN_vector *vectors, int vector_
 		length += sizeof(HCN_vector);					// Keep track of the length.
 	}
 
-	vp.preamble.packet_length = length;					// Set the entire packet length.
-	
-	vp.vector_count = vector_count;
+	vp.vector_count = vector_count;						// make sure we have a vector count.
 
-	hcn_encode(&encoded_packet, packet, length);				// Encode it.
-
-	hcn_packet_sender(player_number, &encoded_packet);			// And we're done.
+	hcn_packet_sender(player_number, packet, length);			// Send the raw packet.
 
 	return true;
 
