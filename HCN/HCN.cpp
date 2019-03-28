@@ -234,6 +234,14 @@ void hcn_on_tick() {
 
 }
 
+// hcn_running() - return true if we have an up-and-running HCN connection.
+bool hcn_running(int player_number) {
+	int pi = (player_number == 0) ? 0 : player_number - 1;
+
+	return hcn_state[pi] == HCN_STATE_RUNNING;
+
+}
+
 // Clear a player's state on quit, or join.
 void hcn_clear_player(int player_number) {
 	int pi = (player_number == 0) ? 0 : player_number - 1;
@@ -253,6 +261,18 @@ void hcn_what_we_are(HCN_OUR_SIDE our_side, HCN_SERVER_TYPE server_type) {
 	hcn_server_type = server_type;
 }
 
+// hsn_value_bool() - return boolean for key/value pair values.
+bool hcn_value_bool(char *value) {
+
+	// Support all three things - on/off, true/false, 0/1
+	if (_stricmp(value, "on") == 0 || _stricmp(value, "true") || _stricmp(value, "1")) {
+		return true;
+	}
+
+	// If it's anything but the above three, it's off. Period.
+	return false;
+
+}
 // hsn_valid_packet() - Check if a chat string contains our magic #, and chat type matches
 bool hcn_valid_packet(struct HCN_packet *packet, unsigned int chat_type) {
 	wchar_t *chat_string = (wchar_t *)packet;
@@ -261,14 +281,6 @@ bool hcn_valid_packet(struct HCN_packet *packet, unsigned int chat_type) {
 		return true;
 	}
 	return false;
-}
-
-// hsn_running() - return true if state is HCN_RUNNING
-bool hcn_running(int player_number) {
-	int pi = (player_number == 0) ? 0 : player_number - 1;
-
-	return hcn_state[pi] == HCN_STATE_RUNNING;
-
 }
 
 // Some key-value pair functions. Callers must adhere to HCN_KEY_LENGTH/HCN_VALUE_LENGTH limits.
@@ -301,7 +313,7 @@ int hcn_encode(struct HCN_packet *packet, struct HCN_packet *source, int packet_
 	wchar_t *s = (wchar_t *)source;
 	int length = 0;
 
-	while (length < HCN_MAX_PACKET_LENGTH / 2 && length < ((packet_length / 2) + packet_length % 2)) {
+	while (length < HCN_MAX_PACKET_LENGTH / 2 && length < ((packet_length / 2) + (packet_length % 2))) {
 		if (*s == 0) {							// If we find a 16-bit zero in the incoming packet,
 			*p++ = HCN_ENCODE_TAG;					// Translate that to a TAG and the ZERO tag.
 			*p++ = HCN_ENCODE_ZERO;
@@ -322,7 +334,7 @@ int hcn_encode(struct HCN_packet *packet, struct HCN_packet *source, int packet_
 	
 	*p++ = 0;								// Null terminate the output string.
 
-	return p - (wchar_t *)packet;						// This should return the 16-bit character length of the resulting packet.
+	return p - (wchar_t *)packet;						// This should return the 16-bit character length of the resulting packet
 
 }
 
@@ -400,10 +412,12 @@ int hcn_decode(struct HCN_packet *packet, struct HCN_packet *source) {
 void hcn_packet_sender(int player_number, HCN_packet *packet, int packet_length) {
 	HCN_preamble *preamble = (HCN_preamble *)packet;			// Get a preamble pointer.
 	HCN_packet encoded_packet;						// We need a place to encode the packet to.
+	HCN_preamble *preamble_encoded = (HCN_preamble *)&encoded_packet;
 
-	preamble->packet_length = packet_length;				// First, store the unencoded packet length in 8-bit bytes.
 
-	preamble->encoded_length = hcn_encode(&encoded_packet, packet, packet_length);	// Encoded packet length is wchar_t (16-bit bytes).
+	preamble->packet_length = ((packet_length / 2) + (packet_length % 2));	// First, store the unencoded packet length in 8-bit bytes, but on an even boundary.
+
+	preamble_encoded->encoded_length = hcn_encode(&encoded_packet, packet, packet_length);	// Encoded packet length is wchar_t (16-bit bytes).
 	hcn_application_sender(player_number, &encoded_packet);			// Send the packet using the supplied packet sender.
 
 }
@@ -454,15 +468,17 @@ bool hcn_process_chat(int player_number, int chat_type, wchar_t *our_packet) {
 	struct HCN_keyvalue_packet keyvalue;
 
 	encoded_length = wcslen(our_packet);
-	if (encoded_preamble->encoded_length != encoded_length) {		// The preamble is setup specifically so that we can look at it's contents without decoding first.
+	if (encoded_preamble->encoded_length != encoded_length + 1) {		// The preamble is setup specifically so that we can look at it's contents without decoding first.
 		hcn_logger(HCN_LOG_DEBUG, "hcn_process_chat(): length of encoded packet doesn't match - %d vs. %d", encoded_length, encoded_preamble->encoded_length);
 	}
 
 	length = hcn_decode(&packet, (struct HCN_packet *)our_packet);		// Now, hcn_decode it.
 
 	if (length != preamble->packet_length) {
-		hcn_logger(HCN_LOG_DEBUG, "hcn_process_chat(): length of decoded packet doesn't match - %d vs. %d", length, encoded_preamble->packet_length);
+		hcn_logger(HCN_LOG_DEBUG, "hcn_process_chat(): length of decoded packet doesn't match - %d vs. %d", length, preamble->packet_length);
+		return false;
 	}
+
 	if (!hcn_valid_packet(&packet, chat_type)) {
 		hcn_logger(HCN_LOG_DEBUG, "hcn_process_chat(): Invalid packet received");
 		return false;
@@ -548,7 +564,7 @@ bool hcn_process_chat(int player_number, int chat_type, wchar_t *our_packet) {
 	case HCN_PACKET_KEYVALUE:
 		hcn_logger(HCN_LOG_DEBUG2, "hcn_process_chat(): Got a keyvalue packet");
 
-		if (keyvalue_packet->keyvalue_length == strlen(keyvalue_packet->keyvalue)) {
+		if (keyvalue_packet->keyvalue_length == strlen(keyvalue_packet->keyvalue) + 1) {
 
 			hcn_logger(HCN_LOG_DEBUG2, "keyvalue = %s for player %d", keyvalue_packet->keyvalue, player_number);
 
@@ -579,35 +595,6 @@ bool hcn_process_chat(int player_number, int chat_type, wchar_t *our_packet) {
 
 	}
 	return false;
-}
-
-// hcn_send_keyvalue() - send a key-value pair to the other side.
-bool hcn_send_keyvalue(int player_number, char *keyvalue) {
-	int pi = (player_number == 0) ? 0 : player_number - 1;
-	int length;
-	struct HCN_keyvalue_packet kv_packet;
-	struct HCN_packet *packet = (struct HCN_packet *)&kv_packet;
-
-	if (hcn_application_sender == NULL) {
-		hcn_logger(HCN_LOG_WARN, "hcn_send_keyvalue(): Application packet sender not set yet!");
-		return false;
-	}
-
-	if (hcn_state[pi] == HCN_STATE_RUNNING) {				// if the state is "RUNNING" we can go ahead and send it.
-		hcn_logger(HCN_LOG_DEBUG2, "HCN sending keyvalue '%s' to player %d", keyvalue, player_number);
-		kv_packet.preamble.packet_type = HCN_PACKET_KEYVALUE;		// Packet type
-		kv_packet.keyvalue_length = strlen(keyvalue);			// make sure we have a char* length.
-		strcpy_s(kv_packet.keyvalue, HCN_KEYVALUE_LENGTH, keyvalue);	// Copy the keyvalue pair in.
-		length = hcn_length(&kv_packet.preamble, kv_packet.keyvalue) + kv_packet.keyvalue_length; // Get the un-encoded length.
-		hcn_packet_sender(player_number, packet, length);		// and send the actual packet.
-		return true;
-	}
-	else {
-		hcn_logger(HCN_LOG_DEBUG, "Other side status is not RUNNING, state = %d, pi = %d", hcn_state[pi], pi);
-	}
-
-	return false;								// indicate we failed.
-
 }
 
 // hcn_datapoint_packet_handler() - Decode a datapoint packet. Assume the packet has already been decoded and verified.
@@ -699,5 +686,34 @@ bool hcn_send_vectors(int player_number, struct HCN_vector *vectors, int vector_
 	hcn_packet_sender(player_number, packet, length);			// Send the raw packet.
 
 	return true;
+
+}
+
+// hcn_send_keyvalue() - send a key-value pair to the other side.
+bool hcn_send_keyvalue(int player_number, char *keyvalue) {
+	int pi = (player_number == 0) ? 0 : player_number - 1;
+	int length;
+	struct HCN_keyvalue_packet kv_packet;
+	struct HCN_packet *packet = (struct HCN_packet *)&kv_packet;
+
+	if (hcn_application_sender == NULL) {
+		hcn_logger(HCN_LOG_WARN, "hcn_send_keyvalue(): Application packet sender not set yet!");
+		return false;
+	}
+
+	if (hcn_state[pi] == HCN_STATE_RUNNING) {				// if the state is "RUNNING" we can go ahead and send it.
+		hcn_logger(HCN_LOG_DEBUG2, "HCN sending keyvalue '%s' to player %d", keyvalue, player_number);
+		kv_packet.preamble.packet_type = HCN_PACKET_KEYVALUE;		// Packet type
+		kv_packet.keyvalue_length = strlen(keyvalue) + 1;		// make sure we have a char* length plus the null terminator.
+		strcpy_s(kv_packet.keyvalue, HCN_KEYVALUE_LENGTH, keyvalue);	// Copy the keyvalue pair in.
+		length = kv_packet.size() + kv_packet.keyvalue_length;		// Get the un-encoded length.
+		hcn_packet_sender(player_number, packet, length);		// and send the actual packet.
+		return true;
+	}
+	else {
+		hcn_logger(HCN_LOG_DEBUG, "Other side status is not RUNNING, state = %d, pi = %d", hcn_state[pi], pi);
+	}
+
+	return false;								// indicate we failed.
 
 }

@@ -1,4 +1,4 @@
-	// Arthur Krewat - msalerno® - 2019/02/20
+// Arthur Krewat - msalerno® - 2019/02/20
 //
 // HCN project - header and C++ source for Halo client-server communications.
 //
@@ -6,6 +6,9 @@
 //
 // For all the gits out there.
 //
+// If you're a C++ snob, I don't want to hear it. Look at HAC2, and the HCN shim is C++, or at least
+//	as much as I can take without vomitting.
+/
 // After dealing with Sehe's NetEvents, I find that the protocol is lacking in a few crucial areas.
 //
 // So going forward, HCN is a way for clients like HAC2 to communicate with both HSE® and SAPP LUA scripts.
@@ -21,11 +24,13 @@
 //	and it would send the entire packet of data. HCN will use zero-byte encoding to eliminate that problem.
 //	This makes it possible to use LUA on the SAPP side to receive and send packets of data.
 //
-// I was going to make a single data packet struct, but there were so many nested unions, it was way too complicated.
-//	Instead we'll define each type of packet individually. Yeah, I know, "templates". To much casting bothers me.
+// I was going to make a single packet struct, but there were so many nested unions, it was way too complicated.
+//	Instead we'll define each type of packet individually. Yeah, I know, "templates". T0o much casting bothers me.
 //
 // Every step of the way, consistency checking is a must. magic #, state in the initial handshake conversation,
 //	packet length, you name it. See HCN_packet_lengths array near the end of this include file.
+//
+// Key/Value pairs and why they even exist - because in LUA, it's easier to generate and receive them than raw data.
 //
 
 /*
@@ -144,7 +149,7 @@ enum HCN_packet_type : unsigned char {
 	HCN_PACKET_HANDSHAKE = 1,				// BI - Start a conversation with a client. Client sends this first. Server replies in kind.
 	HCN_PACKET_DATAPOINT,					// BI - Report or update a datapoint. INT, FLOAT, whatever. Time remaining and tickrate are the first uses.
 	HCN_PACKET_VECTOR,					// BI - Update multiple vectors. Usually server->client for biped location/velocity, or tag locations like flags.
-	HCN_PACKET_KEYVALUE					// Set a key to a value. SJ=ON, SJ=OFF, MTV=ON, etc.
+	HCN_PACKET_KEYVALUE					// BI - Pass a key and a value. SJ=ON, SJ=OFF, MTV=ON, etc.
 };
 
 // States for the state machine. At various stages of handshake, version exchange, and whatever follows that, we need to track state.
@@ -152,12 +157,18 @@ enum HCN_state : unsigned char {
 	HCN_STATE_NONE = 1,					// we haven't done anything yet. This indicates a handshake needs to be performed.
 	HCN_STATE_HANDSHAKE_C2S,				// Client sent a handshake to the server, waiting for a handshake packet in response which includes server's version, etc.
 	HCN_STATE_HANDSHAKE_S2C,				// Server sent a handshake to the client, waiting for a success response 
-	HCN_STATE_RUNNING					// General running state. We're good to send or receive events as needed.
+	HCN_STATE_RUNNING					// General running state. We're good to send or receive data as needed.
 };
 
 //
 // Packet definitions.
 //
+// NOTE - For any packets that contain multiple sets of data, say datapoints or vectors, the length of the packet varies depending
+//		on how many of each there are. So if we send, for example, only one datapoint, the packet contains only one datapoint.
+//		If the packet contains a string, it's the last thing in the packet, and the packet is variable length based on how long
+//		the string is. This does mean that if we need to send multiple strings, like key/value pairs, the formatting requires
+//		a string separator that can be easily parsed. 
+
 struct HCN_packet {						// Generic packet. 
 	char data[HCN_MAX_PACKET_LENGTH];
 };
@@ -167,7 +178,7 @@ struct HCN_preamble {
 	unsigned short int magic;				// Always have a magic number.
 	unsigned char packet_type;				// Packet type.
 	unsigned char packet_length;				// Shouldn't need more than 256 bytes, zero encoding could make this much larger anyway.
-	unsigned char encoded_length;				// This is the encoded length, minus any zero terminationg (wchar_t)
+	unsigned char encoded_length;				// This is the encoded length, minus any zero termination (wchar_t)
 
 	HCN_preamble() { magic = HCN_MAGIC; };			// Always set the magic number on construction. 
 
@@ -189,16 +200,16 @@ struct HCN_handshake {						// A handshake packet.
 };
 
 //
-// HCN data values - provide a mechanism to monitor or update certain data values on the client. 
-//			maybe more later. First use will be time remaining.
-
+// HCN data points - provide a mechanism to report or update certain data values by the client or server. 
+//
 #define HCN_MAX_DATAPOINTS	6				// We can update up to 6 data points at a time.
 
 // HCN_datapoint_type - List of data points we can update.
 enum HCN_datapoint_type : unsigned char {
 	HCN_DATAPOINT_NOT_DEFINED,				// Don't use zero for anything.
 	HCN_DATAPOINT_TIMEREMAINING,				// Time remaining.
-	HCN_DATAPOINT_TICKRATE					// The current tickrate.
+	HCN_DATAPOINT_TICKRATE,					// The current tickrate.
+	HCN_DATAPOINT_GRAVITY					// Gravity sync.
 };
 
 // A single datapoint.
@@ -219,6 +230,8 @@ struct HCN_datapoint_packet {
 
 	unsigned char dp_count;					// The number of datapoints in this packet.
 	struct HCN_datapoint dps[HCN_MAX_DATAPOINTS];		// And the actual datapoints.
+
+	int size() const { return sizeof(preamble) + sizeof(dp_count); } // Return the size of the base packet.
 };
 
 typedef bool(*HCN_callback_datapoint)(int player_number, HCN_datapoint_type dp_type, struct HCN_datapoint *dp);
@@ -233,6 +246,7 @@ struct HCN_datapoint_dispatch {
 
 //
 // HCN vectors - provide a mechanism to monitor or update vectors, of different types, without wasting packets.
+//			More condensed than datapoints.
 //
 
 #define HCN_MAX_VECTORS		4				// Max vectors in a single packet. Because of zero encoding, we don't want to overrun the max packet length.
@@ -261,6 +275,8 @@ struct HCN_vector_packet {
 	unsigned char vector_count;				// Count of vectors we're updating.
 	struct HCN_vector vectors[HCN_MAX_VECTORS];		// Define the array of vectors.
 
+	int size() const { return sizeof(preamble) + sizeof(vector_count); } // Return the size of the base packet.
+
 };
 
 typedef bool(*HCN_callback_vector)(int player_number, HCN_vector_type, struct HCN_vect3d *vector);
@@ -272,7 +288,7 @@ struct HCN_vector_dispatch {
 };
 
 
-// HCN_keyvalue - takes a variable-length string of the form "key=value".
+// HCN_keyvalue - takes a variable-length string of the form "key=value". 
 struct HCN_keyvalue_packet {
 	struct HCN_preamble preamble;
 
@@ -280,6 +296,8 @@ struct HCN_keyvalue_packet {
 	char keyvalue[HCN_KEYVALUE_LENGTH];			// an ASCII key-value pair, of the form "key=value". SJ=ON or SJ=OFF for example.
 
 	HCN_keyvalue_packet() { memset(keyvalue, 0, HCN_KEYVALUE_LENGTH); } // On construction, zero out the entire string.
+
+	int size() const { return sizeof(preamble) + sizeof(keyvalue_length); } // Return the size of the base packet.
 
 };
 
@@ -295,14 +313,53 @@ struct HCN_key_dispatch {
 	HCN_callback_keyvalue callback;
 };
 
-
-
 // Define a way to list keys and values. Useful for decoding ENUMS into text.
 struct HCN_enum_to_string {
 	int e_num;
 	char *name;
 };
 
+// HCN_text_type - List of text types
+enum HCN_text_type : unsigned char {
+	HCN_TEXT_NOT_DEFINED,
+	HCN_TEXT_CHAT,						// A regular chat type.
+	HCN_TEXT_CONSOLE,					// Console text.
+	HCN_TEXT_HUD						// HUD text.
+};
+
+// HCN_text_color - Mirrors HAC2's text colors - others will have to convert on the fly.
+enum HCN_text_color : unsigned char {
+	C_TEXT_RED = 1,
+	C_TEXT_GREEN, 
+	C_TEXT_BLUE, 
+	C_TEXT_YELLOW, 
+	C_TEXT_WHITE
+};
+
+#define HCN_TEXT_LENGTH		200				// Max length of an HCN text string in wchar_t
+
+// HCN_text_packet - a packet that contains text of some type.
+struct HCN_text_packet {
+	struct HCN_preamble preamble;
+
+	enum HCN_text_type text_type;				// The type of text.
+	enum HCN_text_color color;				// The color of the text.
+	wchar_t text[HCN_TEXT_LENGTH];				// UTF-16 text.
+
+	int size() const { return sizeof(preamble) + sizeof(text_type) + sizeof(color); } // Return the size of the base packet.
+
+};
+
+typedef bool(*HCN_callback_text)(int player_number, HCN_text_type text_type, struct HCN_text_packet *packet);
+
+// A way to define a list of callbacks for altering vectors.
+struct HCN_text_dispatch {
+	HCN_text_type text_type;
+	HCN_callback_text callback;
+};
+
+
+// Turn off tight packing.
 #pragma pack(pop)
 
 // An external logger callback. Set by hcn_logger_callback(...) - so a caller can log HCN errors or debug output through it's own logger function
@@ -352,13 +409,14 @@ extern struct HCN_enum_to_string HCN_client_names[];
 
 extern void hcn_init(char *version);
 extern void hcn_on_tick();
+extern bool hcn_running(int player_number);
 extern void hcn_set_logger_callback(HCN_logger_callback callback);
 extern void hcn_clear_player(int player_number);
+extern bool hcn_value_bool(char *value);
 extern bool hcn_valid_packet(struct HCN_packet *packet, unsigned int chat_type);
 extern int hcn_encode(struct HCN_packet *packet, struct HCN_packet *source, int packet_length);
 extern int hcn_decode(struct HCN_packet *packet, struct HCN_packet *source);
 extern void hcn_packet_sender(int player_number, HCN_packet *packet, int packet_length);
-extern bool hcn_running(int player_number);
 extern char *hcn_enum_to_string(int e_num, HCN_enum_to_string *enum_list);
 extern bool hcn_process_chat(int player_number, int chat_type, wchar_t *our_packet);
 extern bool hcn_datapoint_packet_handler(int player_number, HCN_packet *packet);
