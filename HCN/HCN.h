@@ -8,7 +8,7 @@
 //
 // If you're a C++ snob, I don't want to hear it. Look at HAC2, and the HCN shim is C++, or at least
 //	as much as I can take without vomitting.
-/
+//
 // After dealing with Sehe's NetEvents, I find that the protocol is lacking in a few crucial areas.
 //
 // So going forward, HCN is a way for clients like HAC2 to communicate with both HSE® and SAPP LUA scripts.
@@ -24,18 +24,14 @@
 //	and it would send the entire packet of data. HCN will use zero-byte encoding to eliminate that problem.
 //	This makes it possible to use LUA on the SAPP side to receive and send packets of data.
 //
-// I was going to make a single packet struct, but there were so many nested unions, it was way too complicated.
-//	Instead we'll define each type of packet individually. Yeah, I know, "templates". T0o much casting bothers me.
-//
 // Every step of the way, consistency checking is a must. magic #, state in the initial handshake conversation,
 //	packet length, you name it. See HCN_packet_lengths array near the end of this include file.
-//
-// Key/Value pairs and why they even exist - because in LUA, it's easier to generate and receive them than raw data.
+//	A concerted effort was made to use "safe" string functions everywhere. If you find one that isn't, let me know.
 //
 
 /*
 
-   Copyright 2019 Kilowatt Computers
+   (C) Copyright 2019 Kilowatt Computers
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -149,7 +145,8 @@ enum HCN_packet_type : unsigned char {
 	HCN_PACKET_HANDSHAKE = 1,				// BI - Start a conversation with a client. Client sends this first. Server replies in kind.
 	HCN_PACKET_DATAPOINT,					// BI - Report or update a datapoint. INT, FLOAT, whatever. Time remaining and tickrate are the first uses.
 	HCN_PACKET_VECTOR,					// BI - Update multiple vectors. Usually server->client for biped location/velocity, or tag locations like flags.
-	HCN_PACKET_KEYVALUE					// BI - Pass a key and a value. SJ=ON, SJ=OFF, MTV=ON, etc.
+	HCN_PACKET_KEYVALUE,					// BI - Pass a key and a value. SJ=ON, SJ=OFF, MTV=ON, etc.
+	HCN_PACKET_TEXT						// BI - Text of various types, possibly with a color set.
 };
 
 // States for the state machine. At various stages of handshake, version exchange, and whatever follows that, we need to track state.
@@ -323,17 +320,18 @@ struct HCN_enum_to_string {
 enum HCN_text_type : unsigned char {
 	HCN_TEXT_NOT_DEFINED,
 	HCN_TEXT_CHAT,						// A regular chat type.
-	HCN_TEXT_CONSOLE,					// Console text.
+	HCN_TEXT_CONSOLE,					// Console text. NARROW CHARACTERS!
 	HCN_TEXT_HUD						// HUD text.
 };
 
-// HCN_text_color - Mirrors HAC2's text colors - others will have to convert on the fly.
+// HCN_text_color - Mirrors HAC2's text colors for now. If more are needed, start at enum 20
 enum HCN_text_color : unsigned char {
-	C_TEXT_RED = 1,
-	C_TEXT_GREEN, 
-	C_TEXT_BLUE, 
-	C_TEXT_YELLOW, 
-	C_TEXT_WHITE
+	HCN_COLOR_DEFAULT,
+	HCN_COLOR_RED,
+	HCN_COLOR_GREEN,
+	HCN_COLOR_BLUE,
+	HCN_COLOR_YELLOW,
+	HCN_COLOR_WHITE
 };
 
 #define HCN_TEXT_LENGTH		200				// Max length of an HCN text string in wchar_t
@@ -342,9 +340,13 @@ enum HCN_text_color : unsigned char {
 struct HCN_text_packet {
 	struct HCN_preamble preamble;
 
-	enum HCN_text_type text_type;				// The type of text.
-	enum HCN_text_color color;				// The color of the text.
-	wchar_t text[HCN_TEXT_LENGTH];				// UTF-16 text.
+	HCN_text_type text_type;				// The type of text.
+	HCN_text_color color;					// The color of the text.
+	unsigned char text_length;				// and the length of the text.
+	union {
+		wchar_t text[HCN_TEXT_LENGTH];			// UTF-16 text.
+		char text8[HCN_TEXT_LENGTH];			// 8-bit characters (console)
+	};
 
 	int size() const { return sizeof(preamble) + sizeof(text_type) + sizeof(color); } // Return the size of the base packet.
 
@@ -352,7 +354,7 @@ struct HCN_text_packet {
 
 typedef bool(*HCN_callback_text)(int player_number, HCN_text_type text_type, struct HCN_text_packet *packet);
 
-// A way to define a list of callbacks for altering vectors.
+// A way to define a list of callbacks for displaying text.
 struct HCN_text_dispatch {
 	HCN_text_type text_type;
 	HCN_callback_text callback;
@@ -400,14 +402,15 @@ extern void hcn_set_packet_sender(HCN_application_sender application_sender);
 extern void hcn_set_datapoint_callback_list(HCN_datapoint_dispatch *datapoint_list, int datapoint_list_length);
 extern void hcn_set_vector_callback_list(HCN_vector_dispatch *vector_list, int vector_list_length);
 extern void hcn_set_keyvalue_callback_list(HCN_key_dispatch *key_list);
-extern void hcn_what_we_are(HCN_OUR_SIDE our_side, HCN_CLIENT_TYPE client_type);
-extern void hcn_what_we_are(HCN_OUR_SIDE our_side, HCN_SERVER_TYPE client_type);
+extern void hcn_set_text_callback_list(HCN_text_dispatch *text_list, int text_list_length);
 
 extern struct HCN_enum_to_string HCN_state_names[];
 extern struct HCN_enum_to_string HCN_server_names[];
 extern struct HCN_enum_to_string HCN_client_names[];
 
 extern void hcn_init(char *version);
+extern void hcn_what_we_are(HCN_OUR_SIDE our_side, HCN_CLIENT_TYPE client_type);
+extern void hcn_what_we_are(HCN_OUR_SIDE our_side, HCN_SERVER_TYPE client_type);
 extern void hcn_on_tick();
 extern bool hcn_running(int player_number);
 extern void hcn_set_logger_callback(HCN_logger_callback callback);
@@ -421,8 +424,11 @@ extern char *hcn_enum_to_string(int e_num, HCN_enum_to_string *enum_list);
 extern bool hcn_process_chat(int player_number, int chat_type, wchar_t *our_packet);
 extern bool hcn_datapoint_packet_handler(int player_number, HCN_packet *packet);
 extern bool hcn_vector_packet_handler(int player_number, HCN_packet *packet);
-extern bool hcn_send_keyvalue(int player_number, char *keyvalue);
+extern bool hcn_text_packet_handler(int player_number, HCN_packet *packet);
 extern bool hcn_send_datapoints(int player_number, struct HCN_datapoint *dps, int dp_count);
 extern bool hcn_send_vectors(int player_number, struct HCN_vector *vectors, int vector_count);
+extern bool hcn_send_keyvalue(int player_number, char *keyvalue);
+extern bool hcn_send_text(int player_number, HCN_text_type type, HCN_text_color color, wchar_t *text);
+extern bool hcn_send_text(int player_number, HCN_text_type type, HCN_text_color color, char *text);
 
 

@@ -27,9 +27,8 @@
 // Much of this code makes a clear destinction between "server" and "client". HAC2 is a "client". HSE or SAPP+LUA
 //	is a "server". Conversely, some packet types are generic, like key/value pairs.
 //
-// Key-value pairs are used for most things, because defining special packet types for each operation would be
+// Key-value pairs are used for a lot of things, because defining special packet types for each operation would be
 //	complicated, and TBH, silly.
-//
 //
 // NOTE: many functions are provided here to manipulate certain data that could very easily be done directly
 //	by the application. It's done this way to allow for future support for doing other HCN-specific things
@@ -44,7 +43,7 @@
 
 /*
 
-   Copyright 2019 Kilowatt Computers
+   (C) Copyright 2019 Kilowatt Computers
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -101,6 +100,10 @@ int hcn_vector_dispatch_list_entries = 0;
 
 // Callbacks to the application for various key/value pairs
 struct HCN_key_dispatch *hcn_key_dispatch_list = NULL;
+
+// Text packet callbacks.
+struct HCN_text_dispatch *hcn_text_dispatch_list = NULL;
+int hcn_text_dispatch_list_entries = 0;
 
 // State types.
 struct HCN_enum_to_string HCN_state_names[] = {
@@ -180,6 +183,13 @@ void hcn_set_vector_callback_list(HCN_vector_dispatch *vector_list, int vector_l
 void hcn_set_keyvalue_callback_list(HCN_key_dispatch *key_list) {
 
 	hcn_key_dispatch_list = key_list;
+
+}
+
+void hcn_set_text_callback_list(HCN_text_dispatch *text_list, int text_list_length) {
+
+	hcn_text_dispatch_list = text_list;
+	hcn_text_dispatch_list_entries = text_list_length;
 
 }
 
@@ -593,6 +603,12 @@ bool hcn_process_chat(int player_number, int chat_type, wchar_t *our_packet) {
 		}
 		break;;
 
+	// Text packet
+	case HCN_PACKET_TEXT:
+		hcn_logger(HCN_LOG_DEBUG2, "hcn_process_chat(): Got a text packet");
+		return hcn_text_packet_handler(player_number, &packet);
+		break;;
+
 	}
 	return false;
 }
@@ -633,12 +649,26 @@ bool hcn_vector_packet_handler(int player_number, HCN_packet *packet) {
 
 }
 
+// hcn_text_packet_handler() - Deal with text packets.
+bool hcn_text_packet_handler(int player_number, HCN_packet *packet) {
+	int i;
+	HCN_text_type tt;
+	HCN_text_packet *tp = (HCN_text_packet *)packet;
+
+	tt = tp->text_type;
+	if (tt == 0 || tt > hcn_text_dispatch_list_entries) {
+		hcn_logger(HCN_LOG_DEBUG, "Invalid text type %d", tt);
+		return false;						// ABORT if the vector type is unknown. Chances are the rest of the packet is bad anyway.
+	}
+	hcn_text_dispatch_list[tt].callback(player_number, tt, tp);	// Call the application's handler for this text type.
+	return true;
+
+}
 // hcn_send_datapoints() - allow an application to provide a list of datapoints, and send them to the other side.
 bool hcn_send_datapoints(int player_number, struct HCN_datapoint *dps, int dp_count) {
 	int i, length;
 	struct HCN_datapoint_packet dp_packet;
 	struct HCN_packet *packet = (HCN_packet *)&dp_packet;
-	struct HCN_packet encoded_packet;
 
 	if (dp_count > HCN_MAX_DATAPOINTS) return false;			// make sure we're not asked to send too many.
 
@@ -666,7 +696,6 @@ bool hcn_send_vectors(int player_number, struct HCN_vector *vectors, int vector_
 	int i, length;
 	struct HCN_vector_packet vp;
 	struct HCN_packet *packet = (HCN_packet *)&vp;
-	struct HCN_packet encoded_packet;
 
 	if (vector_count > HCN_MAX_VECTORS) return false;			// make sure we're not asked to send too many.
 
@@ -697,7 +726,7 @@ bool hcn_send_keyvalue(int player_number, char *keyvalue) {
 	struct HCN_packet *packet = (struct HCN_packet *)&kv_packet;
 
 	if (hcn_application_sender == NULL) {
-		hcn_logger(HCN_LOG_WARN, "hcn_send_keyvalue(): Application packet sender not set yet!");
+		hcn_logger(HCN_LOG_WARN, "hcn_send_keyvalue(): Application packet sender not set!");
 		return false;
 	}
 
@@ -707,6 +736,68 @@ bool hcn_send_keyvalue(int player_number, char *keyvalue) {
 		kv_packet.keyvalue_length = strlen(keyvalue) + 1;		// make sure we have a char* length plus the null terminator.
 		strcpy_s(kv_packet.keyvalue, HCN_KEYVALUE_LENGTH, keyvalue);	// Copy the keyvalue pair in.
 		length = kv_packet.size() + kv_packet.keyvalue_length;		// Get the un-encoded length.
+		hcn_packet_sender(player_number, packet, length);		// and send the actual packet.
+		return true;
+	}
+	else {
+		hcn_logger(HCN_LOG_DEBUG, "Other side status is not RUNNING, state = %d, pi = %d", hcn_state[pi], pi);
+	}
+
+	return false;								// indicate we failed.
+
+}
+
+// Send a text packet to a client or server
+bool hcn_send_text(int player_number, HCN_text_type type, HCN_text_color color, wchar_t *text) {
+	int pi = (player_number == 0) ? 0 : player_number - 1;
+	int length;
+	struct HCN_text_packet text_packet;
+	struct HCN_packet *packet = (struct HCN_packet *)&text_packet;
+
+	if (hcn_application_sender == NULL) {
+		hcn_logger(HCN_LOG_WARN, "hcn_send_keyvalue(): Application packet sender not set!");
+		return false;
+	}
+
+	if (hcn_state[pi] == HCN_STATE_RUNNING) {				// if the state is "RUNNING" we can go ahead and send it.
+		hcn_logger(HCN_LOG_DEBUG2, "HCN sending text to player %d - '%S'", player_number, text);
+		text_packet.preamble.packet_type = HCN_PACKET_TEXT;		// Packet type
+		text_packet.text_type = type;					// Set the text type.
+		text_packet.color = color;					// and the color
+		text_packet.text_length = wcslen(text) + 1;			// make sure we have a null terminator.
+		wcscpy_s(text_packet.text, HCN_TEXT_LENGTH, text);		// Copy the text into the packet.
+		length = text_packet.size() + text_packet.text_length * 2;	// Get the un-encoded length in bytes.
+		hcn_packet_sender(player_number, packet, length);		// and send the actual packet.
+		return true;
+	}
+	else {
+		hcn_logger(HCN_LOG_DEBUG, "Other side status is not RUNNING, state = %d, pi = %d", hcn_state[pi], pi);
+	}
+
+	return false;								// indicate we failed.
+
+}
+
+// Overloaded version of hcn_send_text() for 8-bit character strings. Be careful to use this only for console output.
+bool hcn_send_text(int player_number, HCN_text_type type, HCN_text_color color, char *text) {
+	int pi = (player_number == 0) ? 0 : player_number - 1;
+	int length;
+	struct HCN_text_packet text_packet;
+	struct HCN_packet *packet = (struct HCN_packet *)&text_packet;
+
+	if (hcn_application_sender == NULL) {
+		hcn_logger(HCN_LOG_WARN, "hcn_send_keyvalue(): Application packet sender not set!");
+		return false;
+	}
+
+	if (hcn_state[pi] == HCN_STATE_RUNNING) {				// if the state is "RUNNING" we can go ahead and send it.
+		hcn_logger(HCN_LOG_DEBUG2, "HCN sending text8 to player %d - '%s'", player_number, text);
+		text_packet.preamble.packet_type = HCN_PACKET_TEXT;		// Packet type
+		text_packet.text_type = type;					// Set the text type.
+		text_packet.color = color;					// and the color
+		text_packet.text_length = strlen(text) + 1;			// make sure we have a null terminator.
+		strcpy_s(text_packet.text8, HCN_TEXT_LENGTH, text);		// Copy the text into the packet.
+		length = text_packet.size() + text_packet.text_length;		// Get the un-encoded length.
 		hcn_packet_sender(player_number, packet, length);		// and send the actual packet.
 		return true;
 	}
