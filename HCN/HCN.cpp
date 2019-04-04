@@ -71,6 +71,7 @@
 HCN_state hcn_state[HCN_MAX_PLAYERS];
 
 // A little bit of a state machine. Keep track of last state, compared to current state, so we can do certain things when the state changes.
+//	For example, sending client id after the state goes to RUNNING
 HCN_state hcn_last_state[HCN_MAX_PLAYERS];
 
 // What we are, client or server. And what type.
@@ -81,6 +82,7 @@ HCN_CLIENT_TYPE hcn_client_type[HCN_MAX_PLAYERS];
 // Keep a copy of the other side's handshake packet. This can include version, and other pertinent info.
 struct HCN_handshake hcn_other_side[HCN_MAX_PLAYERS];
 
+// Store our version somewhere.
 char hcn_our_version[HCN_VALUE_LENGTH] = { 0 };
 
 // Logger callback function. The application provides this so we can output log information in whatever format the application wants.
@@ -98,7 +100,7 @@ int hcn_datapoint_dispatch_list_entries = 0;
 struct HCN_vector_dispatch *hcn_vector_dispatch_list = NULL;
 int hcn_vector_dispatch_list_entries = 0;
 
-// Callbacks to the application for various key/value pairs
+// Callbacks to the application for various key/value pairs. List is terminated by a NULL set.
 struct HCN_key_dispatch *hcn_key_dispatch_list = NULL;
 
 // Text packet callbacks.
@@ -166,6 +168,7 @@ void hcn_set_packet_sender(HCN_application_sender application_sender) {
 	hcn_logger(HCN_LOG_DEBUG2, "Application packet sender function set");
 }
 
+// Set the datapoint callback list.
 void hcn_set_datapoint_callback_list(HCN_datapoint_dispatch *datapoint_list, int datapoint_list_length) {
 
 	hcn_datapoint_dispatch_list = datapoint_list;
@@ -173,6 +176,7 @@ void hcn_set_datapoint_callback_list(HCN_datapoint_dispatch *datapoint_list, int
 
 }
 
+// Set the vector callback list.
 void hcn_set_vector_callback_list(HCN_vector_dispatch *vector_list, int vector_list_length) {
 
 	hcn_vector_dispatch_list = vector_list;
@@ -180,12 +184,14 @@ void hcn_set_vector_callback_list(HCN_vector_dispatch *vector_list, int vector_l
 
 }
 
+// Set the key/value pair callback list.
 void hcn_set_keyvalue_callback_list(HCN_key_dispatch *key_list) {
 
 	hcn_key_dispatch_list = key_list;
 
 }
 
+// Set the text callback list.
 void hcn_set_text_callback_list(HCN_text_dispatch *text_list, int text_list_length) {
 
 	hcn_text_dispatch_list = text_list;
@@ -238,6 +244,7 @@ void hcn_init(char *version) {
 }
 
 // hcn_on_tick() - called every tick - doesn't HAVE to be every tick, but it's a prefect place to call it from.
+//	Anything "state machine"-like can be maintained here.
 void hcn_on_tick() {
 
 	// for now, this does nothing. yet.
@@ -266,6 +273,7 @@ void hcn_what_we_are(HCN_OUR_SIDE our_side, HCN_CLIENT_TYPE client_type) {
 	hcn_our_side = our_side;
 	hcn_client_type[0] = client_type;					// Since we're a client, we only need to define the first entry in hcn_client_type
 }
+
 void hcn_what_we_are(HCN_OUR_SIDE our_side, HCN_SERVER_TYPE server_type) {
 	hcn_our_side = our_side;
 	hcn_server_type = server_type;
@@ -283,6 +291,7 @@ bool hcn_value_bool(char *value) {
 	return false;
 
 }
+
 // hsn_valid_packet() - Check if a chat string contains our magic #, and chat type matches
 bool hcn_valid_packet(struct HCN_packet *packet, unsigned int chat_type) {
 	wchar_t *chat_string = (wchar_t *)packet;
@@ -304,14 +313,6 @@ char *hcn_key_value_parse(char *input) {
 	
 	*p++ = 0;								// terminate the key, and remove the =
 	return p;								// Return a pointer to the value.
-}
-
-// Compute the length of a section of a packet. Many packets start with a preamble, and end with a variable-length c string.
-//		So this function makes things easier to look at than a constant stream of casts.
-//		YES I KNOW this is bad joo-joo in terms of portability, but we're working with a 32-bit Windows application
-//			that only runs on Intel. So there.
-int hcn_length(struct HCN_preamble *preamble, char *string) {
-	return string - (char *)preamble;
 }
 
 // hcn_encode() - Encode a packet, converting wchar_t zeroes to a special sequence. 
@@ -359,23 +360,6 @@ int hcn_decode(struct HCN_packet *packet, struct HCN_packet *source) {
 	int length = 0;
 	int packet_length = wcslen(s);						// length of encoded packet
 
-	/*
-	char buffer[1024];
-	int bufptr = 0;
-	int cols = 0;
-	bufptr += sprintf(buffer + bufptr, "%d ", packet_length);
-	for (int i = 0; i < packet_length; i++) {
-		bufptr += sprintf(buffer + bufptr, "%04x ", s[i]);
-		cols++;
-		if (cols > 10) {
-			hcn_logger(HCN_LOG_DEBUG2, buffer);
-			bufptr = cols = 0;
-		}
-
-	}
-	if (cols > 0 ) hcn_logger(HCN_LOG_DEBUG2, buffer);
-	*/
-
 	while (length < HCN_MAX_PACKET_LENGTH / 2 && length < packet_length) {
 		if (*s == HCN_ENCODE_TAG) {					// If we find the tag for a special sequence in the incoming packet,
 			s++;
@@ -397,21 +381,6 @@ int hcn_decode(struct HCN_packet *packet, struct HCN_packet *source) {
 		}
 		length++;							// processed a 16-bit character.
 	}
-
-	/*
-	bufptr = cols = 0;
-	bufptr += sprintf(buffer + bufptr, "%d ", length);
-	for (int i = 0; i < length; i++) {
-		bufptr += sprintf(buffer + bufptr, "%04x ", op[i]);
-		cols++;
-		if (cols > 10) {
-			hcn_logger(HCN_LOG_DEBUG2, buffer);
-			bufptr = cols = 0;
-		}
-
-	}
-	if (cols > 0) hcn_logger(HCN_LOG_DEBUG2, buffer);
-	*/
 
 	return length;
 
@@ -446,7 +415,7 @@ void hcn_client_start() {
 
 	strcpy_s(handshake.version, sizeof(handshake), hcn_our_version);	// First, copy our version string in.
 	handshake.version[strlen(hcn_our_version) + 1] = 0;			// Double-null terminate that string.
-	length = hcn_length(&handshake.preamble, handshake.version);		// Compute the length of the fixed part of the handshake packet.
+	length = handshake.size();						// get the length of the base packet without the version string.
 	length += strlen(hcn_our_version);					// Make sure we include the length of the version string.
 	handshake.preamble.packet_type = HCN_PACKET_HANDSHAKE;			// make sure they know it's a handshake.
 	handshake.preamble.packet_length = length;				// Set the packet length.
@@ -461,8 +430,8 @@ void hcn_client_start() {
 }
 
 // hsn_process_chat() - actually process an incoming packet. If return is true, we did work.
-//		*** Assume the chat text (our_packet) is null-terminated because Halo would normally
-//			supply a wchar_t string. If it doesn't, all bets are off.
+//		*** Assume the chat text (our_packet) is null-terminated because Halo supplies
+//			a typical wchar_t string.
 bool hcn_process_chat(int player_number, int chat_type, wchar_t *our_packet) {
 	int i;
 	int pi = (player_number == 0) ? 0 : player_number - 1;
@@ -510,7 +479,7 @@ bool hcn_process_chat(int player_number, int chat_type, wchar_t *our_packet) {
 				hcn_logger(HCN_LOG_DEBUG2, "hcn_process_chat(): Got a client calling in, player_number %d", player_number);
 				hcn_state[pi] = HCN_STATE_RUNNING;		// Set the current state of this client to running.
 				//hcn_other_side[pi] = *handshake;		// And keep a copy of the handshake packet.
-				memcpy(&hcn_other_side[pi], handshake, hcn_length(&handshake->preamble, handshake->version) + strlen(handshake->version) + 1); // copy out just the part we need.
+				memcpy(&hcn_other_side[pi], handshake, handshake->size() + strlen(handshake->version) + 1); // copy out just the part we need.
 
 				// Setup our reply.
 				handshake->hcn_state = HCN_STATE_HANDSHAKE_S2C;	// tell the client that our state is Server->Client
@@ -521,7 +490,7 @@ bool hcn_process_chat(int player_number, int chat_type, wchar_t *our_packet) {
 
 				hcn_logger(HCN_LOG_DEBUG, "Client version %s %s", hcn_enum_to_string(hcn_other_side[pi].hcn_type, HCN_client_names), hcn_other_side[pi].version);
 
-				length = hcn_length(&handshake->preamble, handshake->version) + strlen(handshake->version) + 1; // Compute the un-encoded length in 8-bit bytes.
+				length = handshake->size() + strlen(handshake->version) + 1; // Compute the un-encoded length in 8-bit bytes.
 
 				hcn_packet_sender(player_number, &packet, length); // Send it.
 
@@ -610,6 +579,7 @@ bool hcn_process_chat(int player_number, int chat_type, wchar_t *our_packet) {
 		break;;
 
 	}
+
 	return false;
 }
 

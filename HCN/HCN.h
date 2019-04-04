@@ -170,7 +170,8 @@ struct HCN_packet {						// Generic packet.
 	char data[HCN_MAX_PACKET_LENGTH];
 };
 
-// The preamble to every packet.
+// The preamble to every packet. This is designed in such a way that it's contents can be used BEFORE the packet is decoded.
+//	Lengths are always non-zero, etc.
 struct HCN_preamble {
 	unsigned short int magic;				// Always have a magic number.
 	unsigned char packet_type;				// Packet type.
@@ -194,6 +195,9 @@ struct HCN_handshake {						// A handshake packet.
 	char version[HCN_KEYVALUE_LENGTH];			// There's always a version string at the end.
 
 	HCN_handshake() { memset(version, 0, HCN_KEYVALUE_LENGTH); } // On construction, zero out the entire string.
+
+	int size() const { return sizeof(preamble) + sizeof(hcn_type); } // Return the size of the base packet without the version string.
+
 };
 
 //
